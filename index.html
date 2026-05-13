@@ -235,6 +235,14 @@ function cancelLongPress() { clearTimeout(_longPressTimer); }
              onmousedown="startLongPress(event)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()"
              ontouchstart="startLongPress(event)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()"
              title="Maintenir appuyé 2s">⚡</div>
+        <h1 class="text-2xl font-black text-white tracking-wide">FactuBF</h1>
+        <p class="text-slate-400 text-xs mt-1">Facturation professionnelle · Burkina Faso</p>
+        <!-- Bouton installation PWA (visible uniquement si installable) -->
+        <button id="btnInstallerPWA" onclick="installerPWA()"
+                class="hidden mt-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2 rounded-full transition-colors">
+            📲 Installer l'application
+        </button>
+    </div>
         <h1 class="text-3xl font-black text-white leading-none">
             Digital<span class="text-amber-400">Facture</span> <span class="text-sky-400">Pro</span>
         </h1>
@@ -2118,14 +2126,55 @@ function imprimerVente(venteId) {
 }
 </script>
 
-<!-- Service Worker PWA (optionnel — sw.js requis sur le serveur) -->
+<!-- Service Worker + PWA Install -->
 <script>
+// ── Enregistrement Service Worker
 if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js')
-            .then(r => console.log('✅ SW actif:', r.scope))
-            .catch(() => {}); // sw.js absent en dev — silencieux
+        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+            .then(reg => {
+                console.log('✅ SW enregistré — scope:', reg.scope);
+                reg.addEventListener('updatefound', () => {
+                    console.log('🔄 Nouvelle version SW disponible');
+                });
+            })
+            .catch(err => {
+                // En local (file://) c'est normal que ça échoue
+                if (location.protocol === 'file:') {
+                    console.info('ℹ️ SW non actif en local (file://). Normal — fonctionne sur Vercel.');
+                } else {
+                    console.warn('⚠️ SW échec:', err.message);
+                }
+            });
     });
+}
+
+// ── Prompt installation PWA (bouton "Ajouter à l'écran d'accueil")
+let _deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    _deferredPrompt = e;
+    // Affiche le bouton d'installation si présent dans le DOM
+    const btn = document.getElementById('btnInstallerPWA');
+    if (btn) btn.classList.remove('hidden');
+});
+
+window.addEventListener('appinstalled', () => {
+    console.log('✅ FactuBF installée comme PWA');
+    _deferredPrompt = null;
+    const btn = document.getElementById('btnInstallerPWA');
+    if (btn) btn.classList.add('hidden');
+});
+
+async function installerPWA() {
+    if (!_deferredPrompt) {
+        alert('Installation non disponible.\nOuvrez le menu du navigateur → "Ajouter à l\'écran d\'accueil".');
+        return;
+    }
+    _deferredPrompt.prompt();
+    const { outcome } = await _deferredPrompt.userChoice;
+    console.log('PWA install:', outcome);
+    _deferredPrompt = null;
 }
 </script>
 </body>
