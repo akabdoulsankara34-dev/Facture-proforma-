@@ -1,123 +1,80 @@
+
 // ══════════════════════════════════════════════════════
-//  FactuBF — Service Worker PWA
-//  Stratégie : Cache-first pour assets statiques
-//              Network-first pour Firebase & API
+//  FactuBF — Service Worker v2
 // ══════════════════════════════════════════════════════
+const CACHE     = 'factubf-v2';
+const OFFLINE   = '/';
+const FIREBASE  = ['firestore.googleapis.com','firebase.googleapis.com',
+                   'identitytoolkit.googleapis.com','securetoken.googleapis.com',
+                   'firebaseinstallations.googleapis.com'];
+const CDN_CACHE = ['cdn.tailwindcss.com','www.gstatic.com','cdnjs.cloudflare.com'];
 
-const CACHE_NAME    = 'factubf-v1';
-const OFFLINE_URL   = '/';
-
-// Fichiers à mettre en cache immédiatement à l'installation
-const ASSETS_STATIC = [
-    '/',
-    '/index.html',
-    '/manifest.json',
-    '/icons/icon-192.png',
-    '/icons/icon-512.png',
-];
-
-// Domaines Firebase — toujours réseau (pas de cache)
-const NETWORK_ONLY_DOMAINS = [
-    'firestore.googleapis.com',
-    'firebase.googleapis.com',
-    'identitytoolkit.googleapis.com',
-    'securetoken.googleapis.com',
-    'firebaseinstallations.googleapis.com',
-];
-
-// ── Installation : mise en cache des assets statiques
-self.addEventListener('install', event => {
-    console.log('[SW] Installation FactuBF v1');
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(cache => cache.addAll(ASSETS_STATIC))
-            .then(() => self.skipWaiting()) // active immédiatement
+// ── Installation
+self.addEventListener('install', e => {
+    console.log('[SW FactuBF v2] Install');
+    e.waitUntil(
+        caches.open(CACHE)
+            .then(c => c.addAll(['/', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png']))
+            .then(() => self.skipWaiting())
+            .catch(err => console.warn('[SW] Cache partiel:', err))
     );
 });
 
-// ── Activation : nettoyage des anciens caches
-self.addEventListener('activate', event => {
-    console.log('[SW] Activation FactuBF v1');
-    event.waitUntil(
-        caches.keys().then(keys =>
-            Promise.all(
-                keys
-                    .filter(key => key !== CACHE_NAME)
-                    .map(key => {
-                        console.log('[SW] Suppression ancien cache:', key);
-                        return caches.delete(key);
-                    })
-            )
-        ).then(() => self.clients.claim())
+// ── Activation + nettoyage
+self.addEventListener('activate', e => {
+    console.log('[SW FactuBF v2] Activate');
+    e.waitUntil(
+        caches.keys()
+            .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+            .then(() => self.clients.claim())
     );
 });
 
-// ── Interception des requêtes
-self.addEventListener('fetch', event => {
-    const url = new URL(event.request.url);
+// ── Fetch
+self.addEventListener('fetch', e => {
+    const url = new URL(e.request.url);
 
-    // 1. Firebase → toujours réseau (pas de cache)
-    if (NETWORK_ONLY_DOMAINS.some(d => url.hostname.includes(d))) {
-        event.respondWith(fetch(event.request));
+    // Firebase → réseau pur (jamais de cache)
+    if (FIREBASE.some(d => url.hostname.includes(d))) {
+        e.respondWith(fetch(e.request).catch(() => new Response('', { status: 503 })));
         return;
     }
 
-    // 2. Tailwind CDN & Firebase SDK (gstatic) → cache avec fallback réseau
-    if (url.hostname === 'cdn.tailwindcss.com' || url.hostname === 'www.gstatic.com') {
-        event.respondWith(
-            caches.match(event.request).then(cached => {
-                if (cached) return cached;
-                return fetch(event.request).then(response => {
-                    if (response && response.status === 200) {
-                        const clone = response.clone();
-                        caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-                    }
-                    return response;
-                });
-            })
+    // CDN externes → cache avec fallback réseau
+    if (CDN_CACHE.some(d => url.hostname.includes(d))) {
+        e.respondWith(
+            caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
+                if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+                return res;
+            }))
         );
         return;
     }
 
-    // 3. Requêtes navigation (pages) → réseau d'abord, cache en fallback
-    if (event.request.mode === 'navigate') {
-        event.respondWith(
-            fetch(event.request)
-                .then(response => {
-                    // Mettre en cache la version fraîche
-                    if (response && response.status === 200) {
-                        const clone = response.clone();
-                        caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-                    }
-                    return response;
+    // Navigation (pages) → réseau d'abord, cache en fallback
+    if (e.request.mode === 'navigate') {
+        e.respondWith(
+            fetch(e.request)
+                .then(res => {
+                    if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+                    return res;
                 })
-                .catch(() => {
-                    // Hors ligne → version cachée ou page offline
-                    return caches.match(event.request)
-                        || caches.match(OFFLINE_URL);
-                })
+                .catch(() => caches.match(e.request).then(c => c || caches.match(OFFLINE)))
         );
         return;
     }
 
-    // 4. Tout le reste → cache d'abord, réseau en fallback
-    event.respondWith(
-        caches.match(event.request).then(cached => {
-            if (cached) return cached;
-            return fetch(event.request).then(response => {
-                if (response && response.status === 200 && event.request.method === 'GET') {
-                    const clone = response.clone();
-                    caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-                }
-                return response;
-            }).catch(() => caches.match(OFFLINE_URL));
-        })
+    // Reste → cache d'abord
+    e.respondWith(
+        caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
+            if (res.ok && e.request.method === 'GET')
+                caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+            return res;
+        }).catch(() => caches.match(OFFLINE)))
     );
 });
 
-// ── Message pour forcer la mise à jour du SW
-self.addEventListener('message', event => {
-    if (event.data && event.data.type === 'SKIP_WAITING') {
-        self.skipWaiting();
-    }
+// ── Message skip waiting
+self.addEventListener('message', e => {
+    if (e.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
