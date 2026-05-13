@@ -3,9 +3,9 @@
     {
       "source": "/sw.js",
       "headers": [
-        { "key": "Content-Type",              "value": "application/javascript" },
-        { "key": "Service-Worker-Allowed",    "value": "/" },
-        { "key": "Cache-Control",             "value": "no-cache, no-store, must-revalidate" }
+        { "key": "Content-Type",           "value": "application/javascript" },
+        { "key": "Service-Worker-Allowed", "value": "/" },
+        { "key": "Cache-Control",          "value": "no-cache, no-store, must-revalidate" }
       ]
     },
     {
@@ -18,19 +18,8 @@
     {
       "source": "/icons/(.*)",
       "headers": [
-        { "key": "Content-Type", "value": "image/png" },
-        { "key": "Cache-Control","value": "public, max-age=604800" }
-      ]
-    },
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "X-Frame-Options",        "value": "DENY" }
+        { "key": "Cache-Control", "value": "public, max-age=604800" }
       ]
     }
-  ],
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
