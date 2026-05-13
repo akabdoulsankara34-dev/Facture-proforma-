@@ -671,10 +671,14 @@ function cancelLongPress() { clearTimeout(_longPressTimer); }
         </div>
 
         <!-- Boutons actions -->
-        <div class="grid grid-cols-2 gap-2 w-full max-w-[80mm] mx-auto mt-4">
+        <div class="grid grid-cols-3 gap-2 w-full max-w-[80mm] mx-auto mt-4">
             <button onclick="validerVente()"
                     class="no-print bg-green-600 hover:bg-green-700 active:scale-95 text-white py-4 rounded-xl font-black shadow-xl flex flex-col items-center justify-center gap-1 transition-all">
                 <span class="text-2xl">✅</span><span class="text-xs">VALIDER</span>
+            </button>
+            <button onclick="imprimerFactureActuelle()"
+                    class="no-print bg-amber-600 hover:bg-amber-500 active:scale-95 text-white py-4 rounded-xl font-black shadow-xl flex flex-col items-center justify-center gap-1 transition-all">
+                <span class="text-2xl">🖨️</span><span class="text-xs">TICKET</span>
             </button>
             <button onclick="validerEtPDF()"
                     class="no-print bg-purple-600 hover:bg-purple-700 active:scale-95 text-white py-4 rounded-xl font-black shadow-xl flex flex-col items-center justify-center gap-1 transition-all">
@@ -1370,10 +1374,14 @@ function filtrerHistorique(filtre) {
                 <span class="text-white font-bold">${v.numero || '—'}</span>
                 <span class="text-green-400 font-black">${formatMontant(v.total)} F</span>
             </div>
-            <div class="flex justify-between text-slate-400 text-[10px] mt-0.5">
+            <div class="flex justify-between items-center text-slate-400 text-[10px] mt-0.5">
                 <span>👤 ${v.caissier_nom || '—'}</span>
                 <span>${d.toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
             </div>
+            <button onclick="imprimerVente('${v.id}')"
+                    class="mt-1.5 w-full bg-slate-700 hover:bg-amber-700 active:scale-95 text-slate-300 hover:text-white text-[10px] font-bold py-1.5 rounded-lg flex items-center justify-center gap-1.5 transition-all">
+                🖨️ Imprimer ticket
+            </button>
         </div>`;
     }).join('');
 }
@@ -1754,6 +1762,359 @@ function nombreEnLettres(n) {
     if (n >= 1000)    { res += (Math.floor(n / 1000) > 1 ? conv(Math.floor(n / 1000)) + '-' : '') + 'mille' + (n % 1000 ? '-' : ''); n %= 1000; }
     if (n > 0) res += conv(n);
     return res;
+}
+</script>
+
+<!-- ══════════════════════════════════════════════════════
+     MODAL IMPRESSION BLE THERMIQUE
+═══════════════════════════════════════════════════════ -->
+<div id="bleModal" class="hidden fixed inset-0 bg-black/90 z-[300] flex items-end justify-center p-4">
+    <div class="bg-slate-900 rounded-2xl p-5 w-full max-w-sm border border-slate-700 shadow-2xl mb-4">
+
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-4">
+            <div>
+                <h3 class="text-white font-black text-base">🖨️ Impression thermique</h3>
+                <p id="bleStatutTexte" class="text-slate-400 text-xs mt-0.5">Non connecté</p>
+            </div>
+            <button onclick="fermerModalBLE()"
+                    class="text-slate-500 hover:text-white text-xl font-black transition-colors">✕</button>
+        </div>
+
+        <!-- Indicateur statut -->
+        <div id="bleStatutBarre" class="flex items-center gap-2 bg-slate-800 p-2.5 rounded-xl mb-4">
+            <div id="blePoint" class="w-3 h-3 rounded-full bg-slate-600 shrink-0"></div>
+            <p id="bleNomAppareil" class="text-slate-400 text-xs font-bold truncate">Aucune imprimante mémorisée</p>
+            <button id="bleOublierBtn" onclick="oublierImprimante()"
+                    class="hidden ml-auto text-red-400 hover:text-red-300 text-[10px] font-bold shrink-0 transition-colors">
+                ✕ Oublier
+            </button>
+        </div>
+
+        <!-- Boutons -->
+        <div class="space-y-2">
+            <button id="bleBtnConnecter" onclick="connecterImprimante()"
+                    class="w-full bg-amber-600 hover:bg-amber-500 active:scale-95 text-white py-3 rounded-xl font-black text-sm transition-all flex items-center justify-center gap-2">
+                <span>🔍</span><span>Rechercher imprimante BLE</span>
+            </button>
+            <button id="bleBtnImprimer" onclick="confirmerImpression()" disabled
+                    class="w-full bg-slate-700 text-slate-500 py-3 rounded-xl font-black text-sm cursor-not-allowed flex items-center justify-center gap-2">
+                <span>🖨️</span><span>Imprimer le ticket</span>
+            </button>
+            <button onclick="impressionFallback()"
+                    class="w-full bg-slate-800 hover:bg-slate-700 text-slate-400 py-2.5 rounded-xl font-bold text-xs transition-colors flex items-center justify-center gap-2">
+                <span>📄</span><span>Imprimer via le système (iOS / fallback)</span>
+            </button>
+        </div>
+
+        <!-- Copies -->
+        <div class="flex items-center justify-between mt-3 px-1">
+            <span class="text-slate-400 text-xs">Nombre de copies :</span>
+            <div class="flex items-center gap-2">
+                <button onclick="bleChangerCopies(-1)"
+                        class="w-7 h-7 bg-slate-700 hover:bg-slate-600 text-white rounded-full font-black text-sm transition-colors">−</button>
+                <span id="bleCopies" class="text-white font-black text-sm w-4 text-center">1</span>
+                <button onclick="bleChangerCopies(1)"
+                        class="w-7 h-7 bg-slate-700 hover:bg-slate-600 text-white rounded-full font-black text-sm transition-colors">+</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     MODULE BLE THERMIQUE — ESC/POS
+═══════════════════════════════════════════════════════ -->
+<script>
+// ── Profils UUID des imprimantes thermiques BLE génériques
+const BLE_PROFILES = [
+    { service: '000018f0-0000-1000-8000-00805f9b34fb', char: '00002af1-0000-1000-8000-00805f9b34fb' },
+    { service: 'e7810a71-73ae-499d-8c15-faa9aef0c3f2', char: 'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f' },
+    { service: '49535343-fe7d-4ae5-8fa9-9fafd205e455', char: '49535343-8841-43f4-a818-c20a01cfb9e0' },
+    { service: '0000ff00-0000-1000-8000-00805f9b34fb', char: '0000ff02-0000-1000-8000-00805f9b34fb' },
+];
+
+// ── État global imprimante
+let _bleDevice    = null;
+let _bleChar      = null;
+let _bleCopies    = 1;
+let _bleVenteData = null; // vente à imprimer
+
+const PW = 48; // largeur ticket 80mm = 48 chars police normale
+
+// ── Commandes ESC/POS
+const ESC = 0x1B, GS = 0x1D;
+const CMD = {
+    INIT         : [ESC, 0x40],
+    ALIGN_LEFT   : [ESC, 0x61, 0x00],
+    ALIGN_CENTER : [ESC, 0x61, 0x01],
+    ALIGN_RIGHT  : [ESC, 0x61, 0x02],
+    BOLD_ON      : [ESC, 0x45, 0x01],
+    BOLD_OFF     : [ESC, 0x45, 0x00],
+    DOUBLE_SIZE  : [ESC, 0x21, 0x30],
+    NORMAL_SIZE  : [ESC, 0x21, 0x00],
+    LF           : [0x0A],
+    CUT          : [GS, 0x56, 0x41, 0x03],
+};
+
+// ── Helpers texte
+function _norm(str) {
+    return String(str || '')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^\x20-\x7E]/g, '?');
+}
+function _pad(str, width, align = 'left') {
+    const s = _norm(str).substring(0, width);
+    if (align === 'right')  return s.padStart(width);
+    if (align === 'center') {
+        const p = Math.max(0, width - s.length);
+        return ' '.repeat(Math.floor(p/2)) + s + ' '.repeat(Math.ceil(p/2));
+    }
+    return s.padEnd(width);
+}
+function _toBytes(str) {
+    const a = [];
+    for (let i = 0; i < str.length; i++) a.push(str.charCodeAt(i) & 0xFF);
+    return a;
+}
+function _line(str) { return _toBytes(_norm(str) + '\n'); }
+function _cmd(...c)  { return [].concat(...c); }
+
+// ── Générateur ticket ESC/POS
+function genererTicketESCPOS(vente, etab) {
+    const S1 = '='.repeat(PW), S2 = '-'.repeat(PW);
+    const b  = [];
+    const add = (...parts) => { for (const p of parts) b.push(...p); };
+
+    // Init
+    add(CMD.INIT, CMD.ALIGN_CENTER);
+
+    // LOGO TEXTE — nom établissement en grand
+    add(CMD.BOLD_ON, CMD.DOUBLE_SIZE);
+    add(_line(etab.nom || 'MON COMMERCE'));
+    add(CMD.NORMAL_SIZE, CMD.BOLD_OFF);
+    if (etab.activite)  add(_line(etab.activite));
+    const contact = [etab.ville, etab.telephone].filter(Boolean).join('  ');
+    if (contact)        add(_line(contact));
+
+    add(CMD.ALIGN_LEFT, CMD.BOLD_ON);
+    add(_line(S1));
+    add(CMD.BOLD_OFF);
+
+    // INFO FACTURE
+    const d        = vente.createdAt?.toDate ? vente.createdAt.toDate() : new Date();
+    const dateStr  = d.toLocaleDateString('fr-FR');
+    const heureStr = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    add(_line(_pad('Date: ' + dateStr, 26) + _pad(heureStr, PW - 26, 'right')));
+    add(CMD.BOLD_ON);
+    add(_line((vente.type_facture || 'FACTURE') + ' N: ' + _norm(vente.numero || '')));
+    add(CMD.BOLD_OFF);
+    if (vente.client_nom) add(_line('Client : ' + vente.client_nom));
+    add(_line('Caissier: ' + _norm(vente.caissier_nom || '')));
+    add(_line(S2));
+
+    // COLONNES
+    add(CMD.BOLD_ON);
+    add(_line(_pad('ARTICLE', 26) + _pad('QTE', 6, 'right') + _pad('MONTANT', 16, 'right')));
+    add(CMD.BOLD_OFF);
+    add(_line(S2));
+
+    // LIGNES ARTICLES
+    (vente.lignes || []).forEach(l => {
+        const art  = _pad(String(l.article || ''), 26);
+        const qte  = _pad(String(l.qte || 1), 6, 'right');
+        const mont = _pad(formatMontant(l.total || 0), 16, 'right');
+        add(_line(art + qte + mont));
+    });
+
+    add(_line(S2));
+
+    // TOTAL
+    add(CMD.BOLD_ON, CMD.DOUBLE_SIZE, CMD.ALIGN_RIGHT);
+    add(_line('TOTAL: ' + formatMontant(vente.total || 0) + ' F'));
+    add(CMD.NORMAL_SIZE, CMD.BOLD_OFF, CMD.ALIGN_LEFT);
+    add(_line(S1));
+
+    // FOOTER
+    add(CMD.ALIGN_CENTER);
+    add(_line('Merci de votre confiance !'));
+    add(_line('Powered by FactuBF'));
+    add(CMD.ALIGN_LEFT);
+
+    // Feed + Coupe
+    add(CMD.LF, CMD.LF, CMD.LF, CMD.LF, CMD.CUT);
+
+    return b;
+}
+
+// ── Envoi BLE par chunks de 200 octets
+async function _bleWrite(data) {
+    if (!_bleChar) throw new Error('Non connecte');
+    const CHUNK = 200;
+    for (let i = 0; i < data.length; i += CHUNK) {
+        await _bleChar.writeValue(new Uint8Array(data.slice(i, i + CHUNK)));
+        await new Promise(r => setTimeout(r, 60));
+    }
+}
+
+// ── Connexion imprimante BLE
+async function connecterImprimante() {
+    if (!navigator.bluetooth) {
+        alert('Web Bluetooth non disponible.\nUtilisez Chrome sur Android (HTTPS requis apres deploiement).');
+        return false;
+    }
+    _mettreAJourStatutBLE('Recherche...', 'searching');
+    try {
+        const device = await navigator.bluetooth.requestDevice({
+            acceptAllDevices: true,
+            optionalServices: BLE_PROFILES.map(p => p.service)
+        });
+        device.addEventListener('gattserverdisconnected', () => {
+            _bleDevice = null; _bleChar = null;
+            _mettreAJourStatutBLE('Deconnecte', 'disconnected');
+        });
+        _mettreAJourStatutBLE('Connexion...', 'connecting');
+        const server = await device.gatt.connect();
+
+        let ok = false;
+        for (const profile of BLE_PROFILES) {
+            try {
+                const svc  = await server.getPrimaryService(profile.service);
+                const chr  = await svc.getCharacteristic(profile.char);
+                _bleDevice = device;
+                _bleChar   = chr;
+                ok = true;
+                break;
+            } catch (_) { continue; }
+        }
+        if (!ok) throw new Error('Imprimante non reconnue. Essayez de rapprocher l\'appareil.');
+
+        const nom = device.name || 'Imprimante BLE';
+        localStorage.setItem('dfp_printer_name', nom);
+        _mettreAJourStatutBLE('Connecte : ' + nom, 'connected');
+        return true;
+    } catch (err) {
+        if (err.name !== 'NotFoundError') {
+            alert('Echec : ' + err.message);
+        }
+        _mettreAJourStatutBLE('Non connecte', 'disconnected');
+        return false;
+    }
+}
+
+// ── Statut visuel
+function _mettreAJourStatutBLE(texte, etat) {
+    const point   = document.getElementById('blePoint');
+    const statut  = document.getElementById('bleStatutTexte');
+    const nom     = document.getElementById('bleNomAppareil');
+    const btn     = document.getElementById('bleBtnImprimer');
+    const oublier = document.getElementById('bleOublierBtn');
+    const couleurs = { connected: 'bg-green-500', connecting: 'bg-yellow-500 animate-pulse',
+                       searching: 'bg-blue-500 animate-pulse', disconnected: 'bg-slate-600' };
+    if (point)   { point.className = 'w-3 h-3 rounded-full shrink-0 ' + (couleurs[etat] || couleurs.disconnected); }
+    if (statut)  statut.textContent = texte;
+    const saved = localStorage.getItem('dfp_printer_name');
+    if (nom)     nom.textContent = _bleChar ? (_bleDevice?.name || 'Imprimante BLE') : (saved || 'Aucune imprimante memorisee');
+    if (btn) {
+        const pret = !!_bleChar;
+        btn.disabled = !pret;
+        btn.className = pret
+            ? 'w-full bg-green-600 hover:bg-green-500 active:scale-95 text-white py-3 rounded-xl font-black text-sm transition-all flex items-center justify-center gap-2'
+            : 'w-full bg-slate-700 text-slate-500 py-3 rounded-xl font-black text-sm cursor-not-allowed flex items-center justify-center gap-2';
+    }
+    if (oublier) oublier.classList.toggle('hidden', !saved);
+}
+
+// ── Copie nombre
+function bleChangerCopies(delta) {
+    _bleCopies = Math.max(1, Math.min(5, _bleCopies + delta));
+    const el = document.getElementById('bleCopies');
+    if (el) el.textContent = _bleCopies;
+}
+
+// ── Ouvrir modal impression (depuis facture ou historique)
+function ouvrirModalImpression(vente) {
+    _bleVenteData = vente;
+    _bleCopies    = 1;
+    const el = document.getElementById('bleCopies');
+    if (el) el.textContent = '1';
+    _mettreAJourStatutBLE(_bleChar ? 'Connecte : ' + (_bleDevice?.name || 'BLE') : 'Non connecte',
+                          _bleChar ? 'connected' : 'disconnected');
+    document.getElementById('bleModal').classList.remove('hidden');
+}
+
+function fermerModalBLE() {
+    document.getElementById('bleModal').classList.add('hidden');
+    _bleVenteData = null;
+}
+
+function oublierImprimante() {
+    localStorage.removeItem('dfp_printer_name');
+    _bleDevice = null; _bleChar = null;
+    _mettreAJourStatutBLE('Non connecte', 'disconnected');
+}
+
+// ── Impression finale (bouton Imprimer du modal)
+async function confirmerImpression() {
+    if (!_bleVenteData) return;
+    if (!_bleChar) { alert('Connectez d\'abord une imprimante.'); return; }
+
+    const etab   = etat?.etablissement || {};
+    const ticket = genererTicketESCPOS(_bleVenteData, etab);
+
+    const btn = document.getElementById('bleBtnImprimer');
+    if (btn) { btn.disabled = true; btn.querySelector('span:last-child').textContent = 'Impression...'; }
+
+    try {
+        for (let i = 0; i < _bleCopies; i++) {
+            await _bleWrite(ticket);
+            if (i < _bleCopies - 1) await new Promise(r => setTimeout(r, 500));
+        }
+        fermerModalBLE();
+    } catch (err) {
+        console.error('Impression BLE:', err);
+        alert('Erreur impression : ' + err.message + '\nReconnectez l\'imprimante.');
+        _bleDevice = null; _bleChar = null;
+        _mettreAJourStatutBLE('Deconnecte', 'disconnected');
+    } finally {
+        if (btn) { btn.disabled = false; btn.querySelector('span:last-child').textContent = 'Imprimer le ticket'; }
+    }
+}
+
+// ── Fallback CSS print (iOS / navigateurs sans Web Bluetooth)
+function impressionFallback() {
+    fermerModalBLE();
+    window.print();
+}
+
+// ── Imprimer la facture en cours (depuis la caisse)
+function imprimerFactureActuelle() {
+    const lignes = [];
+    document.querySelectorAll('#lignes-facture tr').forEach(tr => {
+        const art = tr.querySelector('input[type="text"]')?.value?.trim();
+        const qte = parseFloat(tr.querySelector('.qte')?.value) || 0;
+        const pu  = parseFloat(tr.querySelector('.pu')?.value)  || 0;
+        if (art && qte > 0 && pu > 0) lignes.push({ article: art, qte, pu, total: qte * pu });
+    });
+    if (!lignes.length) { alert('Aucun article a imprimer.'); return; }
+    const total    = parseFloat(document.getElementById('grandTotal')?.textContent?.replace(/\s/g,'').replace(',','.')) || 0;
+    const numero   = document.getElementById('factureNumero')?.textContent || '';
+    const venteObj = {
+        numero,
+        caissier_nom : etat?.caissierActif?.nom || '',
+        client_nom   : document.getElementById('clientNom')?.value?.trim() || '',
+        type_facture : document.getElementById('typeFacture')?.value || 'FACTURE',
+        lignes,
+        total,
+        createdAt    : { toDate: () => new Date() }
+    };
+    ouvrirModalImpression(venteObj);
+}
+
+// ── Imprimer une vente de l'historique
+function imprimerVente(venteId) {
+    const vente = etat?.ventes?.find(v => v.id === venteId);
+    if (!vente) { alert('Vente introuvable.'); return; }
+    ouvrirModalImpression(vente);
 }
 </script>
 
