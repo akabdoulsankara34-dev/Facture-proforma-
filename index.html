@@ -2126,116 +2126,49 @@ function imprimerVente(venteId) {
 }
 </script>
 
-<!-- Service Worker + PWA Install — intégré directement (pas de sw.js externe) -->
+<!-- Service Worker + PWA Install -->
 <script>
-// ══════════════════════════════════════════════════════
-//  SERVICE WORKER INLINE — FactuBF v2
-// ══════════════════════════════════════════════════════
-const _SW_CODE = `
-const CACHE    = 'factubf-v2';
-const FIREBASE = ['firestore.googleapis.com','firebase.googleapis.com',
-                  'identitytoolkit.googleapis.com','securetoken.googleapis.com',
-                  'firebaseinstallations.googleapis.com'];
-const CDN      = ['cdn.tailwindcss.com','www.gstatic.com','cdnjs.cloudflare.com'];
-
-self.addEventListener('install', e => {
-    console.log('[SW] Install FactuBF v2');
-    e.waitUntil(
-        caches.open(CACHE)
-            .then(c => c.addAll(['/', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png']))
-            .then(() => self.skipWaiting())
-            .catch(err => console.warn('[SW] Cache partiel:', err))
-    );
-});
-
-self.addEventListener('activate', e => {
-    console.log('[SW] Activate FactuBF v2');
-    e.waitUntil(
-        caches.keys()
-            .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
-            .then(() => self.clients.claim())
-    );
-});
-
-self.addEventListener('fetch', e => {
-    const url = new URL(e.request.url);
-    if (FIREBASE.some(d => url.hostname.includes(d))) {
-        e.respondWith(fetch(e.request).catch(() => new Response('', { status: 503 })));
-        return;
-    }
-    if (CDN.some(d => url.hostname.includes(d))) {
-        e.respondWith(
-            caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
-                if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
-                return res;
-            }))
-        );
-        return;
-    }
-    if (e.request.mode === 'navigate') {
-        e.respondWith(
-            fetch(e.request)
-                .then(res => { if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone())); return res; })
-                .catch(() => caches.match(e.request).then(c => c || caches.match('/')))
-        );
-        return;
-    }
-    e.respondWith(
-        caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
-            if (res.ok && e.request.method === 'GET')
-                caches.open(CACHE).then(c => c.put(e.request, res.clone()));
-            return res;
-        }).catch(() => caches.match('/')))
-    );
-});
-
-self.addEventListener('message', e => {
-    if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting();
-});
-`;
-
-// ── Enregistrement via Blob URL (pas besoin de sw.js externe)
+// ── Enregistrement Service Worker
 if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-        try {
-            const blob = new Blob([_SW_CODE], { type: 'application/javascript' });
-            const swUrl = URL.createObjectURL(blob);
-            navigator.serviceWorker.register(swUrl, { scope: '/' })
-                .then(reg => {
-                    console.log('✅ SW inline actif — scope:', reg.scope);
-                    URL.revokeObjectURL(swUrl);
-                    reg.addEventListener('updatefound', () => console.log('🔄 SW update disponible'));
-                })
-                .catch(err => {
-                    URL.revokeObjectURL(swUrl);
-                    if (location.protocol === 'file:') {
-                        console.info('ℹ️ SW non actif en local (file://). Normal — fonctionne sur Vercel HTTPS.');
-                    } else {
-                        console.warn('⚠️ SW échec:', err.message);
-                    }
+        navigator.serviceWorker.register('/sw.js', { scope: '/' })
+            .then(reg => {
+                console.log('✅ SW enregistré — scope:', reg.scope);
+                reg.addEventListener('updatefound', () => {
+                    console.log('🔄 Nouvelle version SW disponible');
                 });
-        } catch (err) {
-            console.warn('⚠️ SW Blob non supporté:', err.message);
-        }
+            })
+            .catch(err => {
+                // En local (file://) c'est normal que ça échoue
+                if (location.protocol === 'file:') {
+                    console.info('ℹ️ SW non actif en local (file://). Normal — fonctionne sur Vercel.');
+                } else {
+                    console.warn('⚠️ SW échec:', err.message);
+                }
+            });
     });
 }
 
-// ── Prompt installation PWA
+// ── Prompt installation PWA (bouton "Ajouter à l'écran d'accueil")
 let _deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();
     _deferredPrompt = e;
+    // Affiche le bouton d'installation si présent dans le DOM
     const btn = document.getElementById('btnInstallerPWA');
     if (btn) btn.classList.remove('hidden');
 });
+
 window.addEventListener('appinstalled', () => {
+    console.log('✅ FactuBF installée comme PWA');
     _deferredPrompt = null;
     const btn = document.getElementById('btnInstallerPWA');
     if (btn) btn.classList.add('hidden');
 });
+
 async function installerPWA() {
     if (!_deferredPrompt) {
-        alert('Ouvrez le menu du navigateur → "Ajouter à l\'écran d\'accueil".');
+        alert('Installation non disponible.\nOuvrez le menu du navigateur → "Ajouter à l\'écran d\'accueil".');
         return;
     }
     _deferredPrompt.prompt();
