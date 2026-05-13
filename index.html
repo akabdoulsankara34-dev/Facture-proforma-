@@ -1,0 +1,1771 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FactuBF</title>
+    <meta name="description" content="FactuBF — Facturation professionnelle pour commerces du Burkina Faso">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#d97706">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="FactuBF">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="/icons/icon-192.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @media print {
+            .no-print { display: none !important; }
+            #typeFacture { display: none !important; }
+            #typeFacturePrint { display: block !important; }
+        }
+        @media screen {
+            #typeFacturePrint { display: none !important; }
+        }
+    </style>
+    <link rel="stylesheet" href="css/style.css">
+
+
+
+<!-- ══════════════════════════════════════════════════════
+     FONCTIONS AUTH — définies tôt pour les onclick inline
+═══════════════════════════════════════════════════════ -->
+<script>
+// Wrapper : attend que Firebase soit prêt avant d'exécuter
+function _whenReady(fn) {
+    if (typeof db !== 'undefined') { fn(); }
+    else { document.addEventListener('dfp_firebase_ready', fn, { once: true }); }
+}
+
+// ════════════════════════════════════════════════════════
+//  PAGE D'ACCUEIL — INSCRIPTION / CONNEXION
+// ════════════════════════════════════════════════════════
+
+function afficherOnglet(onglet) {
+    const estConnexion = onglet === 'connexion';
+    document.getElementById('panneauConnexion').classList.toggle('hidden', !estConnexion);
+    document.getElementById('panneauInscription').classList.toggle('hidden', estConnexion);
+    document.getElementById('tabConnexion').className =
+        'flex-1 py-2 text-sm font-black transition-colors ' +
+        (estConnexion ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400');
+    document.getElementById('tabInscription').className =
+        'flex-1 py-2 text-sm font-black transition-colors ' +
+        (!estConnexion ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400');
+}
+
+function _genererIdEtab(nom) {
+    return nom.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // enlever accents
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 30) + '_' + Date.now().toString().slice(-4);
+}
+
+function _afficherErreur(idEl, msg) {
+    const el = document.getElementById(idEl);
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove('hidden');
+    setTimeout(() => el.classList.add('hidden'), 4000);
+}
+
+function _setAuthLoading(msg) {
+    document.getElementById('authLoading').classList.remove('hidden');
+    const el = document.getElementById('authLoadingMsg');
+    if (el) el.textContent = msg;
+    document.getElementById('panneauConnexion').classList.add('hidden');
+    document.getElementById('panneauInscription').classList.add('hidden');
+}
+
+function _stopAuthLoading() {
+    document.getElementById('authLoading').classList.add('hidden');
+}
+
+async function lancerConnexion() {
+    const id  = document.getElementById('connexionId').value.trim().toLowerCase().replace(/\s+/g, '_');
+    const mdp = document.getElementById('connexionMdp').value.trim();
+    if (!id)  return _afficherErreur('erreurConnexion', 'Identifiant requis.');
+    if (!mdp) return _afficherErreur('erreurConnexion', 'Mot de passe requis.');
+
+    _setAuthLoading('Vérification en cours...');
+    try {
+        const snapEtab = await db.collection('etablissements').doc(id).get();
+        if (!snapEtab.exists) {
+            _stopAuthLoading();
+            afficherOnglet('connexion');
+            return _afficherErreur('erreurConnexion', "Établissement introuvable. Vérifiez l'identifiant.");
+        }
+        const data = snapEtab.data();
+        if (data.mdp_proprietaire !== mdp) {
+            _stopAuthLoading();
+            afficherOnglet('connexion');
+            return _afficherErreur('erreurConnexion', 'Mot de passe incorrect.');
+        }
+        // ✅ Connexion réussie
+        localStorage.setItem('dfp_etablissement_id', id);
+        localStorage.setItem('dfp_mdp', mdp);
+        window.location.reload(); // recharge avec le bon ETABLISSEMENT_ID
+    } catch (err) {
+        console.error('lancerConnexion:', err);
+        _stopAuthLoading();
+        afficherOnglet('connexion');
+        _afficherErreur('erreurConnexion', 'Erreur réseau. Réessayez.');
+    }
+}
+
+async function lancerInscription() {
+    const nom      = document.getElementById('inscNom').value.trim();
+    const activite = document.getElementById('inscActivite').value.trim();
+    const tel      = document.getElementById('inscTel').value.trim();
+    const mdp      = document.getElementById('inscMdp').value.trim();
+    const pin      = document.getElementById('inscPin').value.trim();
+
+    if (!nom) return _afficherErreur('erreurInscription', "Nom de l'établissement requis.");
+    if (!tel) return _afficherErreur('erreurInscription', 'Téléphone requis.');
+    if (mdp.length < 6) return _afficherErreur('erreurInscription', 'Mot de passe : 6 caractères minimum.');
+    if (pin.length < 4 || !/^\d+$/.test(pin)) return _afficherErreur('erreurInscription', 'PIN caisse : 4 à 6 chiffres obligatoires.');
+
+    const id = _genererIdEtab(nom);
+    _setAuthLoading('Création de votre espace...');
+    try {
+        // Vérifier unicité
+        const existing = await db.collection('etablissements').doc(id).get();
+        if (existing.exists) {
+            _stopAuthLoading();
+            afficherOnglet('inscription');
+            return _afficherErreur('erreurInscription', 'Identifiant déjà pris. Réessayez.');
+        }
+
+        const now    = new Date();
+        const expiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+        // 1. Créer document établissement
+        await db.collection('etablissements').doc(id).set({
+            nom,
+            activite: activite || '',
+            telephone: tel,
+            adresse: '',
+            ville: 'Ouagadougou',
+            email: '',
+            rc: '',
+            nif: '',
+            mdp_proprietaire: mdp,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+
+        // 2. Créer abonnement essai 7 jours
+        await db.collection('abonnements').doc(id).set({
+            plan: 'essai',
+            statut: 'actif',
+            expiry: firebase.firestore.Timestamp.fromDate(expiry),
+            suspendu: false,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+
+        // 3. Créer le caissier propriétaire avec son PIN
+        await db.collection('etablissements').doc(id).collection('caissiers').add({
+            nom: nom,
+            telephone: tel,
+            pin: pin,
+            actif: true,
+            role: 'proprietaire',
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+
+        // ✅ Inscription réussie
+        localStorage.setItem('dfp_etablissement_id', id);
+        localStorage.setItem('dfp_mdp', mdp);
+        window.location.reload();
+    } catch (err) {
+        console.error('lancerInscription:', err);
+        _stopAuthLoading();
+        afficherOnglet('inscription');
+        _afficherErreur('erreurInscription', 'Erreur lors de la création. Réessayez.');
+    }
+}
+
+// Déconnexion propriétaire (retour page d'accueil)
+function deconnexionProprietaire() {
+    if (!confirm('Se déconnecter de cet établissement ?')) return;
+    localStorage.removeItem('dfp_etablissement_id');
+    localStorage.removeItem('dfp_mdp');
+    window.location.reload();
+}
+
+// ════════════════════════════════════════════════════════
+//  LONG PRESS logo ⚡ (2 sec) → accès panel dev
+// ════════════════════════════════════════════════════════
+let _longPressTimer;
+function startLongPress(e) {
+    if (e && e.cancelable) e.preventDefault();
+    clearTimeout(_longPressTimer);
+    _longPressTimer = setTimeout(() => {
+        const pin = prompt('🔑 PIN Développeur :');
+        if (typeof DEV_PIN !== 'undefined' && pin === DEV_PIN) {
+            ouvrirPanelDev();
+        } else if (pin !== null) {
+            alert('PIN incorrect');
+        }
+    }, 2000);
+}
+function cancelLongPress() { clearTimeout(_longPressTimer); }
+
+</script>
+</head>
+<body class="bg-gray-100 min-h-screen font-sans antialiased">
+
+<!-- ══════════════════════════════════════════════════════
+     LOADING SCREEN (spinner seul)
+═══════════════════════════════════════════════════════ -->
+<div id="loadingScreen" class="fixed inset-0 bg-slate-900 z-[100] flex items-center justify-center">
+    <div class="text-center">
+        <div class="text-5xl mb-4 animate-pulse">⚡</div>
+        <h1 class="text-2xl font-black text-white mb-2">Digital<span class="text-amber-400">Facture</span> <span class="text-sky-400">Pro</span></h1>
+        <div id="loadingMessage" class="text-white/60 text-sm mt-2">Chargement...</div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     PAGE ACCUEIL — INSCRIPTION / CONNEXION (séparée)
+═══════════════════════════════════════════════════════ -->
+<div id="pageAccueil" class="hidden fixed inset-0 bg-slate-900 z-[95] flex flex-col items-center justify-center p-4">
+
+    <!-- Logo -->
+    <div class="text-center mb-8">
+        <div class="text-5xl mb-3 select-none cursor-pointer"
+             onmousedown="startLongPress(event)" onmouseup="cancelLongPress()" onmouseleave="cancelLongPress()"
+             ontouchstart="startLongPress(event)" ontouchend="cancelLongPress()" ontouchcancel="cancelLongPress()"
+             title="Maintenir appuyé 2s">⚡</div>
+        <h1 class="text-3xl font-black text-white leading-none">
+            Digital<span class="text-amber-400">Facture</span> <span class="text-sky-400">Pro</span>
+        </h1>
+        <p class="text-slate-400 text-xs mt-1">Facturation professionnelle · Burkina Faso</p>
+    </div>
+
+    <div class="w-full max-w-sm">
+        <!-- Onglets -->
+        <div class="flex rounded-xl overflow-hidden border border-slate-700 mb-4">
+            <button id="tabConnexion" onclick="afficherOnglet('connexion')"
+                    class="flex-1 py-2 text-sm font-black bg-amber-600 text-white transition-colors">
+                Connexion
+            </button>
+            <button id="tabInscription" onclick="afficherOnglet('inscription')"
+                    class="flex-1 py-2 text-sm font-black bg-slate-800 text-slate-400 transition-colors">
+                Inscription
+            </button>
+        </div>
+
+        <!-- Spinner auth -->
+        <div id="authLoading" class="hidden text-center py-4">
+            <div class="text-white/60 text-sm animate-pulse" id="authLoadingMsg">Connexion en cours...</div>
+        </div>
+
+        <!-- Panneau Connexion -->
+        <div id="panneauConnexion" class="bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-slate-400 text-xs text-center mb-4">Entrez votre identifiant établissement</p>
+            <div class="space-y-3">
+                <div>
+                    <label class="text-slate-400 text-[10px] uppercase font-bold block mb-1">Identifiant établissement</label>
+                    <input type="text" id="connexionId"
+                           class="w-full bg-slate-900 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl text-sm outline-none focus:border-amber-500 font-mono"
+                           placeholder="ex: boutique_sawadogo"
+                           onkeydown="if(event.key==='Enter') lancerConnexion()">
+                </div>
+                <div>
+                    <label class="text-slate-400 text-[10px] uppercase font-bold block mb-1">Mot de passe propriétaire</label>
+                    <input type="password" id="connexionMdp"
+                           class="w-full bg-slate-900 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl text-sm outline-none focus:border-amber-500"
+                           placeholder="••••••"
+                           onkeydown="if(event.key==='Enter') lancerConnexion()">
+                </div>
+                <p id="erreurConnexion" class="text-red-400 text-xs text-center hidden"></p>
+                <button onclick="lancerConnexion()"
+                        class="w-full bg-amber-600 hover:bg-amber-500 active:scale-95 text-white font-black py-3 rounded-xl text-sm transition-all">
+                    🔓 Se connecter
+                </button>
+            </div>
+        </div>
+
+        <!-- Panneau Inscription -->
+        <div id="panneauInscription" class="hidden bg-slate-800 rounded-2xl p-5 border border-slate-700">
+            <p class="text-slate-400 text-xs text-center mb-4">Créez votre espace établissement</p>
+            <div class="space-y-3">
+                <div>
+                    <label class="text-slate-400 text-[10px] uppercase font-bold block mb-1">Nom de l'établissement *</label>
+                    <input type="text" id="inscNom"
+                           class="w-full bg-slate-900 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl text-sm outline-none focus:border-amber-500 uppercase"
+                           placeholder="ex: BOUTIQUE SAWADOGO">
+                </div>
+                <div>
+                    <label class="text-slate-400 text-[10px] uppercase font-bold block mb-1">Activité</label>
+                    <input type="text" id="inscActivite"
+                           class="w-full bg-slate-900 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl text-sm outline-none focus:border-amber-500"
+                           placeholder="ex: Commerce général, Pharmacie...">
+                </div>
+                <div>
+                    <label class="text-slate-400 text-[10px] uppercase font-bold block mb-1">Téléphone *</label>
+                    <input type="tel" id="inscTel"
+                           class="w-full bg-slate-900 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl text-sm outline-none focus:border-amber-500"
+                           placeholder="+226 XX XX XX XX">
+                </div>
+                <div>
+                    <label class="text-slate-400 text-[10px] uppercase font-bold block mb-1">Mot de passe propriétaire *</label>
+                    <input type="password" id="inscMdp"
+                           class="w-full bg-slate-900 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl text-sm outline-none focus:border-amber-500"
+                           placeholder="Min. 6 caractères">
+                </div>
+                <div>
+                    <label class="text-slate-400 text-[10px] uppercase font-bold block mb-1">PIN Caisse * <span class="text-amber-400">(code accès caisse)</span></label>
+                    <input type="password" id="inscPin" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+                           class="w-full bg-slate-900 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl text-sm text-center tracking-[0.4em] outline-none focus:border-amber-500"
+                           placeholder="4 à 6 chiffres">
+                    <p class="text-slate-600 text-[9px] mt-1 text-center">Ce code vous connecte à votre caisse</p>
+                </div>
+                <p id="erreurInscription" class="text-red-400 text-xs text-center hidden"></p>
+                <button onclick="lancerInscription()"
+                        class="w-full bg-green-600 hover:bg-green-500 active:scale-95 text-white font-black py-3 rounded-xl text-sm transition-all">
+                    ✅ Créer mon espace
+                </button>
+            </div>
+        </div>
+
+        <p class="text-slate-600 text-[10px] text-center mt-4">
+            DigitalFacture Pro · Période d'essai 7 jours offerte
+        </p>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     BLOCAGE ABONNEMENT
+═══════════════════════════════════════════════════════ -->
+<div id="licenceBlockModal" class="hidden fixed inset-0 bg-slate-950 z-[90] flex items-center justify-center p-4">
+    <div class="bg-slate-900 rounded-2xl p-6 w-full max-w-sm border border-red-900 shadow-2xl">
+        <div class="text-center mb-4">
+            <div id="licenceBlockIcon" class="text-5xl mb-3">🚫</div>
+            <h3 id="licenceBlockTitre" class="font-black text-white text-xl">Accès bloqué</h3>
+            <p id="licenceBlockMessage" class="text-slate-400 text-sm mt-2"></p>
+        </div>
+        <div class="bg-slate-800 rounded-xl p-3 text-center mb-3">
+            <p class="text-slate-400 text-xs">Contactez votre administrateur</p>
+            <p class="text-amber-400 font-black text-sm mt-1">DigitalFacture Pro</p>
+        </div>
+        <button onclick="ouvrirModalRenouvellement()"
+                class="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-2 rounded-xl text-sm transition-colors">
+            🔄 Renouveler l&apos;abonnement
+        </button>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     MODAL CONNEXION PIN
+     ✅ BUG CORRIGÉ : "hidden" ajouté + z-[60] + hors appContainer
+═══════════════════════════════════════════════════════ -->
+<div id="loginCaisseModal" class="hidden fixed inset-0 bg-black/90 z-[60] flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+        <div class="text-center mb-4">
+            <div class="text-4xl mb-2">🔐</div>
+            <h3 class="font-black text-xl">CONNEXION CAISSE</h3>
+            <p id="nomEtablissementLogin" class="text-xs text-gray-500 mt-1"></p>
+        </div>
+        <!-- ✅ BUG CORRIGÉ : pattern="[0-9]*" pour clavier numérique mobile -->
+        <input type="password" id="pinInput" maxlength="6" autocomplete="off"
+               inputmode="numeric" pattern="[0-9]*"
+               class="w-full border-4 border-amber-500 text-3xl text-center p-3 rounded-xl mb-4 tracking-[0.5em] outline-none"
+               placeholder="••••"
+               onkeydown="if(event.key==='Enter') connexionCaissier()">
+        <button onclick="connexionCaissier()"
+                class="w-full bg-amber-500 hover:bg-amber-600 active:scale-95 text-white font-black py-3 rounded-xl text-lg transition-all">
+            VALIDER
+        </button>
+        <p class="text-[10px] text-gray-400 text-center mt-3">Code PIN caissier (4 à 6 chiffres)</p>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     APPLICATION
+═══════════════════════════════════════════════════════ -->
+<div id="appContainer" class="hidden min-h-screen bg-gray-100">
+
+    <!-- HEADER -->
+    <div class="bg-slate-900 text-white p-3 sticky top-0 z-30 shadow-xl">
+        <div class="flex justify-between items-center max-w-[80mm] mx-auto">
+            <div class="cursor-default select-none">
+                <h1 id="displayNom" class="text-sm font-black uppercase tracking-tighter leading-none"></h1>
+                <p id="displayActivite" class="text-[8px] text-amber-400 font-bold mt-0.5"></p>
+            </div>
+            <div class="flex items-center gap-2">
+                <!-- Indicateur sync Firestore -->
+                <div id="utilisateursEnLigne" title="Synchronisation cloud"></div>
+                <button onclick="ouvrirPanelProprietaire()"
+                        class="bg-amber-700 hover:bg-amber-600 text-white text-[10px] px-2 py-1 rounded-full font-black transition-colors" title="Propriétaire">👑</button>
+                <button onclick="deconnexion()"
+                        class="bg-red-700 hover:bg-red-600 text-white text-[10px] px-2 py-1 rounded-full font-black transition-colors" title="Déconnexion">⏏</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- PANEL PROPRIÉTAIRE -->
+    <div id="ownerPanel" class="hidden fixed inset-0 bg-slate-950 z-40 overflow-y-auto">
+        <div class="max-w-xl mx-auto p-4">
+            <div class="flex justify-between items-center mb-5 sticky top-0 bg-slate-950 py-2 z-10">
+                <h2 class="text-white font-black text-lg">⚙️ Gestion Établissement</h2>
+                <div class="flex gap-2">
+                    <button onclick="deconnexionProprietaire()"
+                            class="bg-slate-700 hover:bg-red-800 text-white px-3 py-1 rounded-full text-xs font-black transition-colors" title="Changer d'établissement">🚪 Déco</button>
+                    <button onclick="document.getElementById('ownerPanel').classList.add('hidden')"
+                            class="bg-red-700 text-white px-3 py-1 rounded-full text-xs font-black">✕ Fermer</button>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="grid grid-cols-3 gap-2 mb-4">
+                <div class="bg-slate-900 p-3 rounded-xl text-center">
+                    <p class="text-[8px] text-slate-400 uppercase font-bold">Aujourd&apos;hui</p>
+                    <p id="valJour" class="text-green-400 font-black text-sm mt-1">0 F</p>
+                </div>
+                <div class="bg-slate-900 p-3 rounded-xl text-center">
+                    <p class="text-[8px] text-slate-400 uppercase font-bold">Ce mois</p>
+                    <p id="valMois" class="text-sky-400 font-black text-sm mt-1">0 F</p>
+                </div>
+                <div class="bg-slate-900 p-3 rounded-xl text-center">
+                    <p class="text-[8px] text-slate-400 uppercase font-bold">Cette année</p>
+                    <p id="valAn" class="text-amber-400 font-black text-sm mt-1">0 F</p>
+                </div>
+            </div>
+
+            <!-- Abonnement -->
+            <div class="bg-slate-900 p-4 rounded-xl mb-4">
+                <h3 class="text-white font-black text-sm mb-3">🔑 ABONNEMENT</h3>
+                <div class="text-xs space-y-2">
+                    <div class="flex justify-between"><span class="text-slate-400">Statut :</span><span id="aboStatut" class="text-green-400 font-bold">—</span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">Plan :</span><span id="aboPlan" class="text-white">—</span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">Expire le :</span><span id="aboExpiry" class="text-white">—</span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">Jours restants :</span><span id="aboJours" class="text-white font-bold">—</span></div>
+                </div>
+                <button onclick="ouvrirModalRenouvellement()"
+                        class="w-full mt-3 bg-amber-700 hover:bg-amber-600 text-white text-xs py-2 rounded-lg font-bold transition-colors">
+                    🔄 Renouveler
+                </button>
+            </div>
+
+            <!-- Infos établissement -->
+            <div class="bg-slate-900 p-4 rounded-xl mb-4">
+                <h3 class="text-white font-black text-sm mb-3">🏢 ÉTABLISSEMENT</h3>
+                <div class="text-xs text-white space-y-2">
+                    <div class="flex justify-between"><span class="text-slate-400">Nom :</span><span id="infoNom" class="font-bold text-right"></span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">Activité :</span><span id="infoActivite" class="text-right"></span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">Téléphone :</span><span id="infoTel" class="text-right"></span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">Adresse :</span><span id="infoAdresse" class="text-right"></span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">Ville :</span><span id="infoVille" class="text-right"></span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">Email :</span><span id="infoEmail" class="text-right"></span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">RC :</span><span id="infoRc" class="text-right"></span></div>
+                    <div class="flex justify-between"><span class="text-slate-400">NIF :</span><span id="infoNif" class="text-right"></span></div>
+                </div>
+            </div>
+
+            <!-- Caissiers -->
+            <div class="bg-slate-900 p-4 rounded-xl mb-4">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-white font-black text-sm">👥 CAISSIERS</h3>
+                    <button onclick="ouvrirModalAjoutCaissier()"
+                            class="bg-green-700 hover:bg-green-600 text-white text-[10px] px-3 py-1 rounded-full font-black transition-colors">+ Ajouter</button>
+                </div>
+                <div id="listeCaissiers" class="space-y-2"></div>
+            </div>
+
+            <!-- Historique ventes -->
+            <div class="bg-slate-900 p-4 rounded-xl mb-4">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-white font-black text-sm">📋 HISTORIQUE</h3>
+                    <button onclick="exporterCSV()"
+                            class="bg-green-800 hover:bg-green-700 text-white text-[10px] px-3 py-1 rounded-full font-black transition-colors">⬇ CSV</button>
+                </div>
+                <div class="flex gap-2 mb-3">
+                    <button onclick="filtrerHistorique('jour')" id="filtreJour"
+                            class="filtre-btn bg-amber-700 text-white text-[10px] px-3 py-1 rounded-full font-bold">Aujourd&apos;hui</button>
+                    <button onclick="filtrerHistorique('mois')" id="filtreMois"
+                            class="filtre-btn bg-slate-700 text-white text-[10px] px-3 py-1 rounded-full font-bold">Ce mois</button>
+                    <button onclick="filtrerHistorique('tout')" id="filtreTout"
+                            class="filtre-btn bg-slate-700 text-white text-[10px] px-3 py-1 rounded-full font-bold">Tout</button>
+                </div>
+                <div id="historiqueVentes" class="space-y-2 max-h-72 overflow-y-auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL AJOUT CAISSIER -->
+    <div id="modalAjoutCaissier" class="hidden fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 rounded-2xl p-6 w-full max-w-sm border border-slate-700 shadow-2xl">
+            <h3 class="text-white font-black text-lg mb-4">➕ Nouveau Caissier</h3>
+            <input type="text" id="nouveauCaissierNom" placeholder="Nom complet"
+                   class="w-full bg-slate-800 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl mb-3 text-sm outline-none focus:border-amber-500">
+            <input type="tel" id="nouveauCaissierTel" placeholder="Téléphone (optionnel)"
+                   class="w-full bg-slate-800 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl mb-3 text-sm outline-none focus:border-amber-500">
+            <input type="password" id="nouveauCaissierPin" placeholder="PIN (4 à 6 chiffres)" maxlength="6"
+                   inputmode="numeric" pattern="[0-9]*"
+                   class="w-full bg-slate-800 border border-slate-600 text-white placeholder-slate-500 p-3 rounded-xl mb-1 text-sm text-center tracking-widest outline-none focus:border-amber-500">
+            <p class="text-slate-500 text-[10px] mb-4 text-center">Évitez : 1234, 0000, 1111…</p>
+            <div class="grid grid-cols-2 gap-3">
+                <button onclick="document.getElementById('modalAjoutCaissier').classList.add('hidden')"
+                        class="bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl font-bold text-sm transition-colors">Annuler</button>
+                <button onclick="creerCaissier()"
+                        class="bg-green-600 hover:bg-green-500 text-white py-3 rounded-xl font-bold text-sm transition-colors">Créer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL RENOUVELLEMENT -->
+    <div id="modalRenouvellement" class="hidden fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4">
+        <div class="bg-slate-900 rounded-2xl p-6 w-full max-w-sm border border-amber-800 shadow-2xl">
+            <h3 class="text-white font-black text-lg text-center mb-1">💳 Renouveler l&apos;abonnement</h3>
+            <p class="text-slate-400 text-xs text-center mb-5">Choisissez votre formule</p>
+            <div class="space-y-2 mb-5">
+                <!-- ✅ BUG CORRIGÉ : les 3 labels utilisent has-[:checked] uniformément -->
+                <label class="flex justify-between items-center bg-slate-800 p-3 rounded-xl cursor-pointer border-2 border-transparent has-[:checked]:border-amber-500 transition-colors">
+                    <div><div class="text-white font-bold text-sm">Mensuel</div><div class="text-slate-400 text-xs">30 jours</div></div>
+                    <div class="flex items-center gap-3"><span class="text-amber-400 font-black text-sm">5 000 F</span><input type="radio" name="planRenouvellement" value="mensuel" class="accent-amber-500"></div>
+                </label>
+                <label class="flex justify-between items-center bg-slate-800 p-3 rounded-xl cursor-pointer border-2 border-transparent has-[:checked]:border-amber-500 transition-colors">
+                    <div><div class="text-white font-bold text-sm">Trimestriel <span class="text-amber-400 text-[10px]">⭐ Populaire</span></div><div class="text-slate-400 text-xs">90 jours</div></div>
+                    <div class="flex items-center gap-3"><span class="text-amber-400 font-black text-sm">13 500 F</span><input type="radio" name="planRenouvellement" value="trimestriel" checked class="accent-amber-500"></div>
+                </label>
+                <label class="flex justify-between items-center bg-slate-800 p-3 rounded-xl cursor-pointer border-2 border-transparent has-[:checked]:border-amber-500 transition-colors">
+                    <div><div class="text-white font-bold text-sm">Annuel</div><div class="text-slate-400 text-xs">365 jours</div></div>
+                    <div class="flex items-center gap-3"><span class="text-amber-400 font-black text-sm">48 000 F</span><input type="radio" name="planRenouvellement" value="annuel" class="accent-amber-500"></div>
+                </label>
+            </div>
+            <div class="bg-slate-800 rounded-xl p-4 mb-4 text-xs">
+                <p class="text-amber-400 font-bold mb-2">📲 INSTRUCTIONS :</p>
+                <p class="text-white mb-1">1. Envoyez le montant via Orange Money ou Moov Money :</p>
+                <!-- ✅ À REMPLACER par le vrai numéro de paiement -->
+                <p id="numeroMoMo" class="text-amber-400 font-black text-center text-sm my-2">+226 XX XX XX XX</p>
+                <p class="text-white mb-1">2. Référence : <span id="refPaiement" class="font-mono text-amber-400 font-bold"></span></p>
+                <p class="text-slate-400">3. Cliquez &quot;J&apos;ai payé&quot; — validation sous 24h</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <button onclick="document.getElementById('modalRenouvellement').classList.add('hidden')"
+                        class="bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl font-bold text-sm transition-colors">Annuler</button>
+                <button onclick="soumettreRenouvellement()"
+                        class="bg-amber-600 hover:bg-amber-500 text-white py-3 rounded-xl font-bold text-sm transition-colors">J&apos;ai payé ✓</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         ZONE CAISSE
+    ═══════════════════════════════════════════════════════ -->
+    <div id="caisseContent" class="pointer-events-none opacity-20 transition-opacity duration-500 p-3">
+        <div id="facture-ticket" class="max-w-[80mm] mx-auto bg-white p-3 border-2 border-black shadow-lg">
+
+            <!-- En-tête -->
+            <div class="flex justify-between items-start border-b-2 border-black pb-2 text-[10px]">
+                <div>
+                    <h1 id="factureNom" class="text-base font-black uppercase tracking-tighter leading-none"></h1>
+                    <p id="factureActivite" class="font-bold mt-0.5"></p>
+                    <p id="factureTel" class="font-bold"></p>
+                    <p id="factureAdresse"></p>
+                    <p id="factureVille"></p>
+                    <p id="factureRc" class="text-[8px] text-gray-600"></p>
+                    <p id="factureNif" class="text-[8px] text-gray-600"></p>
+                </div>
+                <div class="border-2 border-black text-center w-24 shrink-0">
+                    <div class="grid grid-cols-3 border-b-2 border-black text-[8px] font-bold bg-gray-100">
+                        <span>J</span><span>M</span><span>A</span>
+                    </div>
+                    <!-- ✅ date-display sera peuplé par initDate() ci-dessous -->
+                    <div id="date-display" class="grid grid-cols-3 p-1 font-bold text-[10px]"></div>
+                </div>
+            </div>
+
+            <!-- Type facture + Numéro -->
+            <div class="flex justify-between items-center mt-2 mb-1 text-[10px]">
+                <span class="no-print">
+                    <select id="typeFacture" class="bg-transparent border-0 font-bold text-gray-600 text-[9px] uppercase outline-none cursor-pointer" onchange="majTypeFacture()">
+                        <option value="FACTURE">FACTURE</option>
+                        <option value="FACTURE PROFORMA">FACTURE PROFORMA</option>
+                        <option value="BON DE COMMANDE">BON DE COMMANDE</option>
+                        <option value="DEVIS">DEVIS</option>
+                    </select>
+                </span>
+                <span id="typeFacturePrint" class="hidden font-black text-[10px] text-gray-700 uppercase"></span>
+                <span class="text-sm font-black italic">N° <span id="factureNumero">FAC-00001/25</span></span>
+            </div>
+
+            <!-- Bloc Client -->
+            <div class="border border-gray-300 rounded p-2 mb-2 text-[10px] bg-gray-50">
+                <div class="flex items-start gap-1 mb-1">
+                    <span class="font-black text-gray-700 whitespace-nowrap">DOIT :&nbsp;</span>
+                    <input type="text" id="clientNom"
+                           class="flex-1 bg-transparent border-b border-dotted border-gray-400 outline-none font-bold uppercase text-[11px] px-1 placeholder-gray-300"
+                           placeholder="Nom du client">
+                </div>
+                <div class="flex items-center gap-1">
+                    <span class="font-bold text-gray-500 whitespace-nowrap">Adresse :&nbsp;</span>
+                    <input type="text" id="clientAdresse"
+                           class="flex-1 bg-transparent border-b border-dotted border-gray-400 outline-none text-[10px] px-1 placeholder-gray-300"
+                           placeholder="Ville / Adresse (optionnel)">
+                </div>
+            </div>
+
+            <!-- Caissier -->
+            <div class="flex justify-between items-center mb-2 text-[10px]">
+                <span class="font-bold text-gray-600">Caissier : <span id="nomCaissier" class="text-black">---</span></span>
+            </div>
+
+            <!-- Tableau -->
+            <table class="w-full border-collapse border-2 border-black text-[11px]">
+                <thead>
+                    <tr class="bg-gray-100 border-b-2 border-black font-black text-[8px] uppercase">
+                        <th class="border-r-2 border-black p-1 text-left">Article</th>
+                        <th class="border-r-2 border-black p-1 w-8 text-center">Qté</th>
+                        <th class="border-r-2 border-black p-1 w-14 text-center">P.U</th>
+                        <th class="p-1 text-right w-16">Total</th>
+                        <th class="no-print w-5"></th>
+                    </tr>
+                </thead>
+                <tbody id="lignes-facture">
+                    <tr class="border-b border-gray-200">
+                        <td class="border-r-2 border-black p-0"><input type="text" class="w-full p-1 uppercase font-bold text-[11px] outline-none" placeholder="Article"></td>
+                        <td class="border-r-2 border-black p-0"><input type="number" class="w-full text-center qte font-bold text-[11px] p-1 outline-none" value="1" min="1" oninput="calculer()"></td>
+                        <td class="border-r-2 border-black p-0"><input type="number" class="w-full text-center pu font-bold text-[11px] p-1 outline-none" placeholder="0" min="0" oninput="calculer()"></td>
+                        <td class="text-right p-1 font-black total-ligne">0</td>
+                        <td class="no-print p-0 w-5"></td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <button onclick="addRow()" class="no-print w-full bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold py-2 mt-2 rounded-lg border border-dashed border-gray-400 transition-colors">
+                + Ajouter une ligne
+            </button>
+
+            <!-- Sous-total / TVA / TTC -->
+            <div class="mt-2 pt-2 border-t border-gray-200 text-[10px] space-y-1">
+                <div class="flex justify-between text-gray-600">
+                    <span>Montant HT</span>
+                    <span id="montantHT">0 F</span>
+                </div>
+                <div id="tvaSection" class="hidden flex justify-between text-gray-600">
+                    <span>TVA (<span id="tvaTaux">0</span>%)</span>
+                    <span id="tvaMontant">0 F</span>
+                </div>
+            </div>
+
+            <!-- Total TTC -->
+            <div class="mt-3 border-t-2 border-black pt-2">
+                <div class="flex justify-between font-black text-base bg-gray-100 p-2 rounded">
+                    <span>TOTAL TTC</span>
+                    <span><span id="grandTotal">0</span> F</span>
+                </div>
+                <div id="lettres" class="text-[9px] mt-2 italic uppercase text-gray-600 border-b border-dotted border-gray-400 pb-2">
+                    Arrêté la présente facture à la somme de...
+                </div>
+            </div>
+
+            <!-- Mentions légales -->
+            <div id="mentionsLegales" class="text-[7px] text-center mt-3 text-gray-500 space-y-0.5"></div>
+
+            <!-- Signatures -->
+            <div class="flex justify-between mt-6 text-[9px] font-bold italic uppercase text-gray-600">
+                <span>Le Caissier</span>
+                <span>Le Client</span>
+            </div>
+        </div>
+
+        <!-- Boutons actions -->
+        <div class="grid grid-cols-2 gap-2 w-full max-w-[80mm] mx-auto mt-4">
+            <button onclick="validerVente()"
+                    class="no-print bg-green-600 hover:bg-green-700 active:scale-95 text-white py-4 rounded-xl font-black shadow-xl flex flex-col items-center justify-center gap-1 transition-all">
+                <span class="text-2xl">✅</span><span class="text-xs">VALIDER</span>
+            </button>
+            <button onclick="validerEtPDF()"
+                    class="no-print bg-purple-600 hover:bg-purple-700 active:scale-95 text-white py-4 rounded-xl font-black shadow-xl flex flex-col items-center justify-center gap-1 transition-all">
+                <span class="text-2xl">📥</span><span class="text-xs">PDF</span>
+            </button>
+        </div>
+        <div class="w-full max-w-[80mm] mx-auto mt-2">
+            <button onclick="partagerWhatsApp()"
+                    class="no-print w-full bg-[#25D366] hover:bg-[#128C7E] active:scale-95 text-white py-3 rounded-xl font-black shadow-xl flex items-center justify-center gap-2 transition-all">
+                <span class="text-xl">📱</span><span class="text-sm">PARTAGER VIA WHATSAPP</span>
+            </button>
+        </div>
+    </div>
+</div><!-- fin #appContainer -->
+
+
+<!-- ══════════════════════════════════════════════════════
+     ADMIN DÉVELOPPEUR — PANEL COMPLET
+═══════════════════════════════════════════════════════ -->
+<div id="devPanel" class="hidden fixed inset-0 bg-slate-950 z-[200] overflow-y-auto">
+    <div class="max-w-2xl mx-auto p-4">
+
+        <!-- Header -->
+        <div class="flex justify-between items-center mb-5 sticky top-0 bg-slate-950 py-3 z-10 border-b border-slate-800">
+            <div>
+                <h2 class="text-white font-black text-xl">🛠 Admin Développeur</h2>
+                <p class="text-slate-400 text-xs">Gestion des abonnements · DigitalFacture Pro</p>
+            </div>
+            <button onclick="fermerPanelDev()"
+                    class="bg-red-700 hover:bg-red-600 text-white px-4 py-1.5 rounded-full text-sm font-black transition-colors">✕ Fermer</button>
+        </div>
+
+        <!-- Stats rapides -->
+        <div class="grid grid-cols-4 gap-2 mb-4">
+            <div class="bg-slate-900 p-2 rounded-xl text-center">
+                <p class="text-slate-400 text-[9px] uppercase font-bold">Total</p>
+                <p id="devStatTotal" class="text-white font-black text-lg mt-1">—</p>
+            </div>
+            <div class="bg-slate-900 p-2 rounded-xl text-center">
+                <p class="text-slate-400 text-[9px] uppercase font-bold">Actifs</p>
+                <p id="devStatActifs" class="text-green-400 font-black text-lg mt-1">—</p>
+            </div>
+            <div class="bg-slate-900 p-2 rounded-xl text-center">
+                <p class="text-slate-400 text-[9px] uppercase font-bold">Expirés</p>
+                <p id="devStatExpires" class="text-red-400 font-black text-lg mt-1">—</p>
+            </div>
+            <div class="bg-slate-900 p-2 rounded-xl text-center">
+                <p class="text-slate-400 text-[9px] uppercase font-bold">Suspendus</p>
+                <p id="devStatSuspendus" class="text-yellow-400 font-black text-lg mt-1">—</p>
+            </div>
+        </div>
+
+        <!-- Bouton rafraîchir -->
+        <button onclick="chargerTousEtablissements()"
+                class="w-full bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs py-2 rounded-xl mb-4 font-bold transition-colors">
+            🔄 Rafraîchir la liste
+        </button>
+
+        <!-- Filtres -->
+        <div class="flex gap-2 mb-4 flex-wrap">
+            <button onclick="filtrerEtablissements('tous')"    id="devFiltreTous"     class="dev-filtre-btn bg-amber-700 text-white text-xs px-3 py-1 rounded-full font-bold">Tous</button>
+            <button onclick="filtrerEtablissements('actif')"   id="devFiltreActif"    class="dev-filtre-btn bg-slate-700 text-white text-xs px-3 py-1 rounded-full font-bold">✅ Actifs</button>
+            <button onclick="filtrerEtablissements('expire')"  id="devFiltreExpire"   class="dev-filtre-btn bg-slate-700 text-white text-xs px-3 py-1 rounded-full font-bold">🚫 Expirés</button>
+            <button onclick="filtrerEtablissements('suspendu')" id="devFiltreSuspendu" class="dev-filtre-btn bg-slate-700 text-white text-xs px-3 py-1 rounded-full font-bold">⏸ Suspendus</button>
+            <button onclick="filtrerEtablissements('essai')"   id="devFiltreEssai"    class="dev-filtre-btn bg-slate-700 text-white text-xs px-3 py-1 rounded-full font-bold">🆕 Essai</button>
+        </div>
+
+        <!-- Liste des établissements -->
+        <div id="devListeEtablissements" class="space-y-3 pb-8">
+            <p class="text-slate-500 text-xs text-center py-8 animate-pulse">Chargement...</p>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL ACTIVATION ABONNEMENT DEV -->
+<div id="devModalAbo" class="hidden fixed inset-0 bg-black/90 z-[210] flex items-center justify-center p-4">
+    <div class="bg-slate-900 rounded-2xl p-5 w-full max-w-sm border border-slate-700 shadow-2xl">
+        <h3 class="text-white font-black text-base mb-1">🔑 Activer l'abonnement</h3>
+        <p id="devModalAboNom" class="text-amber-400 text-sm font-bold mb-4"></p>
+        <div class="space-y-2 mb-4">
+            <p class="text-slate-400 text-xs font-bold uppercase mb-2">Choisir le plan :</p>
+            <label class="flex justify-between items-center bg-slate-800 p-3 rounded-xl cursor-pointer border-2 border-transparent has-[:checked]:border-amber-500 transition-colors">
+                <div><div class="text-white font-bold text-sm">Essai</div><div class="text-slate-400 text-xs">7 jours</div></div>
+                <input type="radio" name="devPlan" value="essai" class="accent-amber-500">
+            </label>
+            <label class="flex justify-between items-center bg-slate-800 p-3 rounded-xl cursor-pointer border-2 border-transparent has-[:checked]:border-amber-500 transition-colors">
+                <div><div class="text-white font-bold text-sm">Mensuel</div><div class="text-slate-400 text-xs">30 jours · 5 000 F</div></div>
+                <input type="radio" name="devPlan" value="mensuel" class="accent-amber-500">
+            </label>
+            <label class="flex justify-between items-center bg-slate-800 p-3 rounded-xl cursor-pointer border-2 border-transparent has-[:checked]:border-amber-500 transition-colors">
+                <div><div class="text-white font-bold text-sm">Trimestriel <span class="text-amber-400 text-[10px]">⭐</span></div><div class="text-slate-400 text-xs">90 jours · 13 500 F</div></div>
+                <input type="radio" name="devPlan" value="trimestriel" checked class="accent-amber-500">
+            </label>
+            <label class="flex justify-between items-center bg-slate-800 p-3 rounded-xl cursor-pointer border-2 border-transparent has-[:checked]:border-amber-500 transition-colors">
+                <div><div class="text-white font-bold text-sm">Annuel</div><div class="text-slate-400 text-xs">365 jours · 48 000 F</div></div>
+                <input type="radio" name="devPlan" value="annuel" class="accent-amber-500">
+            </label>
+        </div>
+        <div class="grid grid-cols-2 gap-3">
+            <button onclick="document.getElementById('devModalAbo').classList.add('hidden')"
+                    class="bg-slate-700 hover:bg-slate-600 text-white py-3 rounded-xl font-bold text-sm transition-colors">Annuler</button>
+            <button onclick="confirmerActivation()"
+                    class="bg-green-600 hover:bg-green-500 text-white py-3 rounded-xl font-bold text-sm transition-colors">✅ Activer</button>
+        </div>
+    </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     FIREBASE SDK — chargé ici pour garantir l'ordre d'exécution
+═══════════════════════════════════════════════════════ -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+
+<!-- ══════════════════════════════════════════════════════
+     CONFIGURATION FIREBASE
+═══════════════════════════════════════════════════════ -->
+<script>
+// ══════════════════════════════════════════════════
+//  CONFIGURATION FIREBASE — REMPLACER CES VALEURS
+// ══════════════════════════════════════════════════
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyAXUsvjnd8lTfyrlPTQg8sdQCF5w5lCQj0",
+  authDomain: "digifacture-38f0c.firebaseapp.com",
+  projectId: "digifacture-38f0c",
+  storageBucket: "digifacture-38f0c.firebasestorage.app",
+  messagingSenderId: "20691422575",
+  appId: "1:20691422575:web:61f74e8745777b0c862c9a"
+};
+
+// ── Identifiant unique de cet établissement
+const ETABLISSEMENT_ID = localStorage.getItem('dfp_etablissement_id') || '';
+
+// ── PIN admin developpeur (accès panel secret)
+const DEV_PIN = '761278';
+
+// ── Initialisation Firebase
+if (!firebase.apps.length) {
+    firebase.initializeApp(FIREBASE_CONFIG);
+}
+const db   = firebase.firestore();
+const auth = firebase.auth();
+
+// ── enablePersistence désactivé — cause des blocages en file://
+// db.enablePersistence(...);
+
+// ── Raccourcis collections — relecture dynamique du localStorage à chaque appel
+const FB = {
+    _id           : () => localStorage.getItem('dfp_etablissement_id') || '',
+    etablissement : function() { return db.collection('etablissements').doc(this._id()); },
+    caissiers     : function() { return db.collection('etablissements').doc(this._id()).collection('caissiers'); },
+    ventes        : function() { return db.collection('etablissements').doc(this._id()).collection('ventes'); },
+    abonnement    : function() { return db.collection('abonnements').doc(this._id()); },
+};
+document.dispatchEvent(new Event('dfp_firebase_ready'));
+</script>
+
+<!-- ══════════════════════════════════════════════════════
+     SCRIPTS APPLICATIFS
+═══════════════════════════════════════════════════════ -->
+<script>
+// ════════════════════════════════════════════════════════
+//  STATE GLOBAL
+// ════════════════════════════════════════════════════════
+let etat = {
+    etablissement : null,   // données du doc Firestore
+    caissierActif : null,   // { id, nom, pin }
+    abonnement    : null,   // données abonnement
+    ventes        : [],     // cache local ventes
+    listeners     : [],     // unsubscribe Firestore listeners
+};
+
+// ════════════════════════════════════════════════════════
+//  INIT — point d'entrée au chargement
+// ════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', async () => {
+    initDate();
+    await chargerEtablissement();
+});
+
+
+// ════════════════════════════════════════════════════════
+//  CHARGEMENT ÉTABLISSEMENT + ABONNEMENT
+// ════════════════════════════════════════════════════════
+async function chargerEtablissement() {
+    // ── Si pas d'ID en localStorage → afficher page accueil
+    const etabId = localStorage.getItem('dfp_etablissement_id');
+    if (!etabId) {
+        masquerLoading();
+        document.getElementById('pageAccueil').classList.remove('hidden');
+        return;
+    }
+
+    setLoadingMessage('Connexion Firebase...');
+    try {
+        // ── Étape 1 : charger l'établissement via .get() (attendu avant de continuer)
+        setLoadingMessage('Chargement établissement...');
+        const snapEtab = await FB.etablissement().get();
+        if (!snapEtab.exists) {
+            bloquerAcces('etablissement_introuvable',
+                '⚠️ Établissement introuvable',
+                `ID "${FB._id()}" non trouvé dans la base. Contactez le support.`);
+            return;
+        }
+        etat.etablissement = { id: snapEtab.id, ...snapEtab.data() };
+        appliquerInfosEtablissement(etat.etablissement);
+
+        // ── Activer l'écoute temps-réel pour les mises à jour ultérieures
+        const unsubEtab = FB.etablissement().onSnapshot(snap => {
+            if (!snap.exists) return;
+            etat.etablissement = { id: snap.id, ...snap.data() };
+            appliquerInfosEtablissement(etat.etablissement);
+        }, err => console.error('Firestore etab onSnapshot:', err));
+        etat.listeners.push(unsubEtab);
+
+        // ── Étape 2 : vérification abonnement
+        setLoadingMessage('Vérification abonnement...');
+        const snapAbo = await FB.abonnement().get();
+        if (!snapAbo.exists) {
+            bloquerAcces('no_subscription', '🔑 Aucun abonnement actif',
+                'Aucun abonnement trouvé pour cet établissement.');
+            return;
+        }
+        etat.abonnement = snapAbo.data();
+        const statut = verifierAbonnement(etat.abonnement);
+
+        if (statut.bloque) {
+            bloquerAcces(statut.code, statut.titre, statut.message);
+            return;
+        }
+
+        // ── Accès autorisé
+        afficherInfosAbonnement(etat.abonnement, statut);
+        masquerLoading();
+        afficherModalConnexion();
+
+        // ── Écoute live des ventes
+        ecouterVentes();
+
+    } catch (err) {
+        console.error('chargerEtablissement:', err);
+        // Afficher l'erreur ET débloquer le loading pour ne pas rester bloqué
+        masquerLoading();
+        document.getElementById('licenceBlockIcon').textContent  = '📡';
+        document.getElementById('licenceBlockTitre').textContent = 'Erreur de connexion';
+        document.getElementById('licenceBlockMessage').textContent =
+            `Impossible de joindre Firebase. Vérifiez votre réseau et que l'ID établissement "${FB._id()}" est correct.`;
+        document.getElementById('licenceBlockModal').classList.remove('hidden');
+    }
+}
+
+// ════════════════════════════════════════════════════════
+//  VÉRIFICATION ABONNEMENT
+// ════════════════════════════════════════════════════════
+function verifierAbonnement(abo) {
+    if (!abo || !abo.expiry) {
+        return { bloque: true, code: 'no_expiry', titre: '🔑 Abonnement invalide', message: 'Date d\'expiration introuvable.' };
+    }
+    const now       = new Date();
+    const expiry    = abo.expiry.toDate ? abo.expiry.toDate() : new Date(abo.expiry);
+    const joursRestants = Math.ceil((expiry - now) / 86400000);
+
+    if (joursRestants <= 0) {
+        return { bloque: true, code: 'expired',
+            titre: '🚫 Abonnement expiré',
+            message: `Votre abonnement a expiré le ${expiry.toLocaleDateString('fr-FR')}.` };
+    }
+    if (abo.suspendu === true) {
+        return { bloque: true, code: 'suspended', titre: '⏸ Compte suspendu',
+            message: 'Votre compte a été suspendu. Contactez le support.' };
+    }
+    return { bloque: false, joursRestants, expiry };
+}
+
+function afficherInfosAbonnement(abo, statut) {
+    const expiry = abo.expiry.toDate ? abo.expiry.toDate() : new Date(abo.expiry);
+    document.getElementById('aboStatut').textContent  = '✅ Actif';
+    document.getElementById('aboPlan').textContent    = abo.plan || '—';
+    document.getElementById('aboExpiry').textContent  = expiry.toLocaleDateString('fr-FR');
+    document.getElementById('aboJours').textContent   = `${statut.joursRestants} jours`;
+    document.getElementById('aboJours').className     = statut.joursRestants <= 7
+        ? 'text-red-400 font-black' : 'text-green-400 font-bold';
+}
+
+// ════════════════════════════════════════════════════════
+//  CONNEXION CAISSIER
+// ════════════════════════════════════════════════════════
+function afficherModalConnexion() {
+    if (!etat.etablissement) return;
+    document.getElementById('nomEtablissementLogin').textContent =
+        etat.etablissement.nom || 'DigitalFacture Pro';
+    document.getElementById('appContainer').classList.remove('hidden');
+    document.getElementById('loginCaisseModal').classList.remove('hidden');
+    document.getElementById('pinInput').focus();
+}
+
+async function connexionCaissier() {
+    const pin = document.getElementById('pinInput').value.trim();
+    if (pin.length < 4) { alert('PIN trop court (minimum 4 chiffres)'); return; }
+
+    try {
+        const snap = await FB.caissiers().where('pin', '==', pin).where('actif', '==', true).get();
+        if (snap.empty) {
+            document.getElementById('pinInput').value = '';
+            document.getElementById('pinInput').classList.add('border-red-500');
+            setTimeout(() => document.getElementById('pinInput').classList.remove('border-red-500'), 1000);
+            alert('❌ PIN incorrect ou caissier inactif');
+            return;
+        }
+        const doc = snap.docs[0];
+        etat.caissierActif = { id: doc.id, ...doc.data() };
+        document.getElementById('loginCaisseModal').classList.add('hidden');
+        document.getElementById('nomCaissier').textContent = etat.caissierActif.nom;
+        activerCaisse();
+    } catch (err) {
+        console.error('connexionCaissier:', err);
+        alert('Erreur de connexion. Vérifiez votre réseau.');
+    }
+}
+
+function activerCaisse() {
+    const zone = document.getElementById('caisseContent');
+    zone.classList.remove('pointer-events-none', 'opacity-20');
+    genererNumerFacture();
+}
+
+function deconnexion() {
+    if (!confirm('Déconnecter le caissier ?')) return;
+    etat.caissierActif = null;
+    document.getElementById('nomCaissier').textContent = '---';
+    document.getElementById('pinInput').value = '';
+    document.getElementById('caisseContent').classList.add('pointer-events-none', 'opacity-20');
+    document.getElementById('loginCaisseModal').classList.remove('hidden');
+    document.getElementById('pinInput').focus();
+}
+
+// ════════════════════════════════════════════════════════
+//  INFOS ÉTABLISSEMENT → DOM
+// ════════════════════════════════════════════════════════
+function appliquerInfosEtablissement(e) {
+    const set = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = val || '';
+    };
+    set('displayNom',     e.nom);
+    set('displayActivite',e.activite);
+    set('factureNom',     e.nom);
+    set('factureActivite',e.activite);
+    set('factureTel',     e.telephone);
+    set('factureAdresse', e.adresse);
+    set('factureVille',   e.ville);
+    set('factureRc',      e.rc ? `RC : ${e.rc}` : '');
+    set('factureNif',     e.nif ? `NIF : ${e.nif}` : '');
+    set('nomEtablissementLogin', e.nom);
+    // Panel propriétaire
+    set('infoNom',      e.nom);
+    set('infoActivite', e.activite);
+    set('infoTel',      e.telephone);
+    set('infoAdresse',  e.adresse);
+    set('infoVille',    e.ville);
+    set('infoEmail',    e.email);
+    set('infoRc',       e.rc);
+    set('infoNif',      e.nif);
+    // Mentions légales
+    const mentions = document.getElementById('mentionsLegales');
+    if (mentions && e.mentions) mentions.innerHTML = e.mentions;
+}
+
+// ════════════════════════════════════════════════════════
+//  CAISSIERS — CRUD
+// ════════════════════════════════════════════════════════
+function ouvrirModalAjoutCaissier() {
+    document.getElementById('nouveauCaissierNom').value = '';
+    document.getElementById('nouveauCaissierTel').value = '';
+    document.getElementById('nouveauCaissierPin').value = '';
+    document.getElementById('modalAjoutCaissier').classList.remove('hidden');
+}
+
+async function creerCaissier() {
+    const nom = document.getElementById('nouveauCaissierNom').value.trim();
+    const tel = document.getElementById('nouveauCaissierTel').value.trim();
+    const pin = document.getElementById('nouveauCaissierPin').value.trim();
+
+    if (!nom)              { alert('Le nom est obligatoire'); return; }
+    if (pin.length < 4)    { alert('PIN minimum 4 chiffres'); return; }
+    if (!/^\d+$/.test(pin)){ alert('Le PIN doit contenir uniquement des chiffres'); return; }
+
+    try {
+        // Vérifier unicité du PIN
+        const existing = await FB.caissiers().where('pin', '==', pin).get();
+        if (!existing.empty) { alert('Ce PIN est déjà utilisé. Choisissez-en un autre.'); return; }
+
+        await FB.caissiers().add({
+            nom,
+            telephone: tel || null,
+            pin,
+            actif: true,
+            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        document.getElementById('modalAjoutCaissier').classList.add('hidden');
+        chargerListeCaissiers();
+    } catch (err) {
+        console.error('creerCaissier:', err);
+        alert('Erreur lors de la création du caissier.');
+    }
+}
+
+async function chargerListeCaissiers() {
+    try {
+        const snap = await FB.caissiers().orderBy('nom').get();
+        const liste = document.getElementById('listeCaissiers');
+        if (snap.empty) {
+            liste.innerHTML = '<p class="text-slate-500 text-xs text-center">Aucun caissier enregistré</p>';
+            return;
+        }
+        liste.innerHTML = snap.docs.map(doc => {
+            const c = doc.data();
+            return `
+            <div class="flex justify-between items-center bg-slate-800 p-2 rounded-xl">
+                <div>
+                    <p class="text-white font-bold text-xs">${c.nom}</p>
+                    ${c.telephone ? `<p class="text-slate-400 text-[10px]">${c.telephone}</p>` : ''}
+                </div>
+                <div class="flex gap-2 items-center">
+                    <span class="text-[9px] ${c.actif ? 'text-green-400' : 'text-red-400'} font-bold">
+                        ${c.actif ? '● Actif' : '● Inactif'}
+                    </span>
+                    <button onclick="toggleCaissier('${doc.id}', ${c.actif})"
+                            class="text-[9px] bg-slate-700 hover:bg-slate-600 text-white px-2 py-0.5 rounded-full">
+                        ${c.actif ? 'Désactiver' : 'Activer'}
+                    </button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (err) {
+        console.error('chargerListeCaissiers:', err);
+    }
+}
+
+async function toggleCaissier(id, actuel) {
+    try {
+        await FB.caissiers().doc(id).update({ actif: !actuel });
+        chargerListeCaissiers();
+    } catch (err) {
+        console.error('toggleCaissier:', err);
+    }
+}
+
+// ════════════════════════════════════════════════════════
+//  FACTURE — CALCULS
+// ════════════════════════════════════════════════════════
+function initDate() {
+    const now = new Date();
+    const j = String(now.getDate()).padStart(2, '0');
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const a = String(now.getFullYear()).slice(-2);
+    const dd = document.getElementById('date-display');
+    if (dd) dd.innerHTML = `<span>${j}</span><span>${m}</span><span>${a}</span>`;
+}
+
+async function genererNumerFacture() {
+    try {
+        const now   = new Date();
+        const today = now.toISOString().slice(0, 10).replace(/-/g, '');
+        const annee = String(now.getFullYear()).slice(-2); // ex. "25"
+        const snap  = await FB.ventes()
+            .where('date_jour', '==', today)
+            .orderBy('createdAt', 'desc')
+            .limit(1).get();
+        const seq = snap.empty ? 1 : ((snap.docs[0].data().sequence || 0) + 1);
+        // Format : FAC-00001/25
+        document.getElementById('factureNumero').textContent =
+            `FAC-${String(seq).padStart(5, '0')}/${annee}`;
+        window._currentSequence = seq;
+        window._currentDateJour = today;
+    } catch (err) {
+        console.warn('genererNumerFacture:', err);
+        const annee = String(new Date().getFullYear()).slice(-2);
+        document.getElementById('factureNumero').textContent =
+            `FAC-${Date.now().toString().slice(-5)}/${annee}`;
+    }
+}
+
+function addRow() {
+    const tbody = document.getElementById('lignes-facture');
+    const tr = document.createElement('tr');
+    tr.className = 'border-b border-gray-200';
+    tr.innerHTML = `
+        <td class="border-r-2 border-black p-0"><input type="text" class="w-full p-1 uppercase font-bold text-[11px] outline-none" placeholder="Article"></td>
+        <td class="border-r-2 border-black p-0"><input type="number" class="w-full text-center qte font-bold text-[11px] p-1 outline-none" value="1" min="1" oninput="calculer()"></td>
+        <td class="border-r-2 border-black p-0"><input type="number" class="w-full text-center pu font-bold text-[11px] p-1 outline-none" placeholder="0" min="0" oninput="calculer()"></td>
+        <td class="text-right p-1 font-black total-ligne">0</td>
+        <td class="no-print p-0 w-5 text-center"><button onclick="supprimerLigne(this)" class="text-red-400 text-xs font-black">✕</button></td>
+    `;
+    tbody.appendChild(tr);
+    tr.querySelector('input[type="text"]').focus();
+}
+
+function supprimerLigne(btn) {
+    const tr = btn.closest('tr');
+    const tbody = document.getElementById('lignes-facture');
+    if (tbody.querySelectorAll('tr').length > 1) { tr.remove(); calculer(); }
+}
+
+function calculer() {
+    let total = 0;
+    document.querySelectorAll('#lignes-facture tr').forEach(tr => {
+        const qte  = parseFloat(tr.querySelector('.qte')?.value) || 0;
+        const pu   = parseFloat(tr.querySelector('.pu')?.value)  || 0;
+        const sous = qte * pu;
+        const cell = tr.querySelector('.total-ligne');
+        if (cell) cell.textContent = formatMontant(sous);
+        total += sous;
+    });
+
+    // HT affiché en permanence
+    const htEl = document.getElementById('montantHT');
+    if (htEl) htEl.textContent = `${formatMontant(total)} F`;
+
+    // TVA
+    const tvaEl = document.getElementById('tvaSection');
+    const tvaTx = parseFloat(document.getElementById('tvaTaux')?.textContent) || 0;
+    let montantFinal = total;
+    if (tvaTx > 0) {
+        const tva = total * tvaTx / 100;
+        montantFinal = total + tva;
+        document.getElementById('tvaMontant').textContent = `${formatMontant(tva)} F`;
+        tvaEl.classList.remove('hidden');
+    } else {
+        tvaEl.classList.add('hidden');
+    }
+
+    document.getElementById('grandTotal').textContent = formatMontant(montantFinal);
+    document.getElementById('lettres').textContent =
+        `Arrêté la présente facture à la somme de : ${nombreEnLettres(montantFinal)} francs CFA`;
+}
+
+function formatMontant(n) {
+    return Math.round(n).toLocaleString('fr-FR');
+}
+
+// ════════════════════════════════════════════════════════
+//  VALIDATION VENTE → FIRESTORE
+// ════════════════════════════════════════════════════════
+async function validerVente() {
+    const lignes = getLignesFacture();
+    if (!lignes.length) { alert('Aucun article saisi.'); return; }
+    if (!etat.caissierActif) { alert('Aucun caissier connecté.'); return; }
+
+    const total = parseFloat(document.getElementById('grandTotal').textContent.replace(/\s/g, '').replace(',', '.')) || 0;
+    if (total <= 0) { alert('Montant invalide.'); return; }
+
+    try {
+        const clientNomVal = document.getElementById('clientNom')?.value?.trim() || '';
+        const clientAdresseVal = document.getElementById('clientAdresse')?.value?.trim() || '';
+        const typeFactureVal = document.getElementById('typeFacture')?.value || 'FACTURE';
+        await FB.ventes().add({
+            numero        : document.getElementById('factureNumero').textContent,
+            caissier_id   : etat.caissierActif.id,
+            caissier_nom  : etat.caissierActif.nom,
+            client_nom    : clientNomVal,
+            client_adresse: clientAdresseVal,
+            type_facture  : typeFactureVal,
+            lignes,
+            total,
+            date_jour     : window._currentDateJour || new Date().toISOString().slice(0, 10).replace(/-/g, ''),
+            sequence      : window._currentSequence || 1,
+            createdAt     : firebase.firestore.FieldValue.serverTimestamp()
+        });
+        alert(`✅ Vente enregistrée — ${formatMontant(total)} F`);
+        reinitialiserFacture();
+    } catch (err) {
+        console.error('validerVente:', err);
+        alert('Erreur lors de l\'enregistrement. Vente sauvegardée hors-ligne.');
+    }
+}
+
+async function validerEtPDF() {
+    await validerVente();
+    window.print();
+}
+
+function getLignesFacture() {
+    const lignes = [];
+    document.querySelectorAll('#lignes-facture tr').forEach(tr => {
+        const art = tr.querySelector('input[type="text"]')?.value?.trim();
+        const qte = parseFloat(tr.querySelector('.qte')?.value) || 0;
+        const pu  = parseFloat(tr.querySelector('.pu')?.value)  || 0;
+        if (art && qte > 0 && pu > 0) lignes.push({ article: art, qte, pu, total: qte * pu });
+    });
+    return lignes;
+}
+
+function majTypeFacture() {
+    const sel = document.getElementById('typeFacture');
+    const print = document.getElementById('typeFacturePrint');
+    if (sel && print) {
+        print.textContent = sel.value;
+        // Show print span and hide select when printing
+    }
+}
+
+function reinitialiserFacture() {
+    const tbody = document.getElementById('lignes-facture');
+    tbody.innerHTML = `
+    <tr class="border-b border-gray-200">
+        <td class="border-r-2 border-black p-0"><input type="text" class="w-full p-1 uppercase font-bold text-[11px] outline-none" placeholder="Article"></td>
+        <td class="border-r-2 border-black p-0"><input type="number" class="w-full text-center qte font-bold text-[11px] p-1 outline-none" value="1" min="1" oninput="calculer()"></td>
+        <td class="border-r-2 border-black p-0"><input type="number" class="w-full text-center pu font-bold text-[11px] p-1 outline-none" placeholder="0" min="0" oninput="calculer()"></td>
+        <td class="text-right p-1 font-black total-ligne">0</td>
+        <td class="no-print p-0 w-5"></td>
+    </tr>`;
+    document.getElementById('grandTotal').textContent = '0';
+    const htEl = document.getElementById('montantHT');
+    if (htEl) htEl.textContent = '0 F';
+    document.getElementById('lettres').textContent = 'Arrêté la présente facture à la somme de...';
+    // Réinitialiser champs client
+    const cn = document.getElementById('clientNom');
+    const ca = document.getElementById('clientAdresse');
+    if (cn) cn.value = '';
+    if (ca) ca.value = '';
+    genererNumerFacture();
+}
+
+// ════════════════════════════════════════════════════════
+//  PARTAGE WHATSAPP
+// ════════════════════════════════════════════════════════
+function partagerWhatsApp() {
+    const lignes  = getLignesFacture();
+    const total   = document.getElementById('grandTotal').textContent;
+    const numero  = document.getElementById('factureNumero').textContent;
+    const nom     = document.getElementById('factureNom').textContent;
+    const caissier= document.getElementById('nomCaissier').textContent;
+    if (!lignes.length) { alert('Aucun article à partager.'); return; }
+
+    const clientNomWA = document.getElementById('clientNom')?.value?.trim() || '';
+    const typeFactureWA = document.getElementById('typeFacture')?.value || 'FACTURE';
+    let msg = `🧾 *${typeFactureWA} ${numero}*\n`;
+    msg += `🏪 *${nom}*\n`;
+    if (clientNomWA) msg += `👥 Client : ${clientNomWA}\n`;
+    msg += `👤 Caissier : ${caissier}\n`;
+    msg += `📅 ${new Date().toLocaleDateString('fr-FR')}\n\n`;
+    lignes.forEach(l => { msg += `• ${l.article} × ${l.qte} = ${formatMontant(l.total)} F\n`; });
+    msg += `\n💰 *TOTAL : ${total} F*\n\nMerci pour votre confiance ! 🙏`;
+
+    window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+}
+
+// ════════════════════════════════════════════════════════
+//  HISTORIQUE VENTES (temps-réel)
+// ════════════════════════════════════════════════════════
+let _filtreActif = 'jour';
+
+function ecouterVentes() {
+    const unsubVentes = FB.ventes()
+        .orderBy('createdAt', 'desc')
+        .limit(200)
+        .onSnapshot(snap => {
+            etat.ventes = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+            filtrerHistorique(_filtreActif);
+            calculerStats();
+        }, err => console.error('écouteVentes:', err));
+    etat.listeners.push(unsubVentes);
+}
+
+function filtrerHistorique(filtre) {
+    _filtreActif = filtre;
+    ['filtreJour', 'filtreMois', 'filtreTout'].forEach(id => {
+        document.getElementById(id)?.classList.replace('bg-amber-700', 'bg-slate-700');
+    });
+    const actifId = filtre === 'jour' ? 'filtreJour' : filtre === 'mois' ? 'filtreMois' : 'filtreTout';
+    document.getElementById(actifId)?.classList.replace('bg-slate-700', 'bg-amber-700');
+
+    const now = new Date();
+    const ventesFiltrées = etat.ventes.filter(v => {
+        if (!v.createdAt) return filtre === 'tout';
+        const d = v.createdAt.toDate ? v.createdAt.toDate() : new Date(v.createdAt);
+        if (filtre === 'jour')  return d.toDateString() === now.toDateString();
+        if (filtre === 'mois')  return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+        return true;
+    });
+
+    const container = document.getElementById('historiqueVentes');
+    if (!ventesFiltrées.length) {
+        container.innerHTML = '<p class="text-slate-500 text-xs text-center py-4">Aucune vente</p>';
+        return;
+    }
+    container.innerHTML = ventesFiltrées.map(v => {
+        const d = v.createdAt?.toDate ? v.createdAt.toDate() : new Date();
+        return `
+        <div class="bg-slate-800 p-2 rounded-xl text-xs">
+            <div class="flex justify-between items-center">
+                <span class="text-white font-bold">${v.numero || '—'}</span>
+                <span class="text-green-400 font-black">${formatMontant(v.total)} F</span>
+            </div>
+            <div class="flex justify-between text-slate-400 text-[10px] mt-0.5">
+                <span>👤 ${v.caissier_nom || '—'}</span>
+                <span>${d.toLocaleString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function calculerStats() {
+    const now  = new Date();
+    let jour = 0, mois = 0, an = 0;
+    etat.ventes.forEach(v => {
+        const d = v.createdAt?.toDate ? v.createdAt.toDate() : null;
+        if (!d) return;
+        if (d.toDateString() === now.toDateString())                                          jour += v.total || 0;
+        if (d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear())         mois += v.total || 0;
+        if (d.getFullYear() === now.getFullYear())                                             an   += v.total || 0;
+    });
+    const s = id => document.getElementById(id);
+    if (s('valJour')) s('valJour').textContent = `${formatMontant(jour)} F`;
+    if (s('valMois')) s('valMois').textContent = `${formatMontant(mois)} F`;
+    if (s('valAn'))   s('valAn').textContent   = `${formatMontant(an)} F`;
+}
+
+// ════════════════════════════════════════════════════════
+//  EXPORT CSV
+// ════════════════════════════════════════════════════════
+function exporterCSV() {
+    if (!etat.ventes.length) { alert('Aucune vente à exporter.'); return; }
+    const entetes = ['Numéro', 'Caissier', 'Total (F)', 'Date'];
+    const lignes  = etat.ventes.map(v => {
+        const d = v.createdAt?.toDate ? v.createdAt.toDate() : new Date();
+        return [v.numero, v.caissier_nom, v.total, d.toLocaleString('fr-FR')].join(';');
+    });
+    const csv  = [entetes.join(';'), ...lignes].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `ventes_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+// ════════════════════════════════════════════════════════
+//  PANEL PROPRIÉTAIRE
+// ════════════════════════════════════════════════════════
+function ouvrirPanelProprietaire() {
+    document.getElementById('ownerPanel').classList.remove('hidden');
+    chargerListeCaissiers();
+}
+
+// ════════════════════════════════════════════════════════
+//  ADMIN DÉVELOPPEUR — FONCTIONS COMPLÈTES
+// ════════════════════════════════════════════════════════
+let _devEtablissements = [];
+let _devFiltreActuel   = 'tous';
+let _devEtabSelectionne = null;
+
+function afficherPanelDev() { ouvrirPanelDev(); } // rétro-compat
+
+async function ouvrirPanelDev() {
+    document.getElementById('devPanel').classList.remove('hidden');
+    await chargerTousEtablissements();
+}
+
+function fermerPanelDev() {
+    document.getElementById('devPanel').classList.add('hidden');
+}
+
+async function chargerTousEtablissements() {
+    document.getElementById('devListeEtablissements').innerHTML =
+        '<p class="text-slate-500 text-xs text-center py-8 animate-pulse">Chargement...</p>';
+    try {
+        // { source: 'server' } force la lecture depuis Firestore (ignore le cache local)
+        const [snapEtabs, snapAbos] = await Promise.all([
+            db.collection('etablissements').get({ source: 'server' }),
+            db.collection('abonnements').get({ source: 'server' })
+        ]);
+        const abosMap = {};
+        snapAbos.forEach(doc => { abosMap[doc.id] = doc.data(); });
+
+        _devEtablissements = snapEtabs.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            abonnement: abosMap[doc.id] || null
+        }));
+
+        _calculerStatsAdmin();
+        afficherListeAdmin();
+    } catch (err) {
+        console.error('chargerTousEtablissements — code:', err.code, '| msg:', err.message);
+        const msg = err.code === 'permission-denied'
+            ? '🔒 Accès refusé — mettez à jour les règles Firestore (allow read: if true)'
+            : err.code === 'unavailable'
+            ? '📡 Hors ligne ou Firebase indisponible. Vérifiez votre réseau.'
+            : `❌ Erreur : ${err.code || err.message}`;
+        document.getElementById('devListeEtablissements').innerHTML =
+            `<p class="text-red-400 text-xs text-center py-4">${msg}</p>`;
+    }
+}
+
+function _calculerStatsAdmin() {
+    const now = new Date();
+    let actifs = 0, expires = 0, suspendus = 0;
+    _devEtablissements.forEach(e => {
+        const abo = e.abonnement;
+        if (!abo) return;
+        if (abo.suspendu) { suspendus++; return; }
+        const exp = abo.expiry?.toDate ? abo.expiry.toDate() : new Date(abo.expiry || 0);
+        exp < now ? expires++ : actifs++;
+    });
+    const s = id => document.getElementById(id);
+    if (s('devStatTotal'))    s('devStatTotal').textContent    = _devEtablissements.length;
+    if (s('devStatActifs'))   s('devStatActifs').textContent   = actifs;
+    if (s('devStatExpires'))  s('devStatExpires').textContent  = expires;
+    if (s('devStatSuspendus'))s('devStatSuspendus').textContent= suspendus;
+}
+
+function filtrerEtablissements(filtre) {
+    _devFiltreActuel = filtre;
+    document.querySelectorAll('.dev-filtre-btn').forEach(btn => {
+        btn.classList.replace('bg-amber-700', 'bg-slate-700');
+    });
+    const map = { tous:'devFiltreTous', actif:'devFiltreActif', expire:'devFiltreExpire', suspendu:'devFiltreSuspendu', essai:'devFiltreEssai' };
+    const el = document.getElementById(map[filtre]);
+    if (el) el.classList.replace('bg-slate-700', 'bg-amber-700');
+    afficherListeAdmin();
+}
+
+function afficherListeAdmin() {
+    const now  = new Date();
+    const liste = document.getElementById('devListeEtablissements');
+
+    const filtered = _devEtablissements.filter(e => {
+        const abo = e.abonnement;
+        if (!abo) return _devFiltreActuel === 'tous';
+        const exp = abo.expiry?.toDate ? abo.expiry.toDate() : new Date(abo.expiry || 0);
+        const jr  = Math.ceil((exp - now) / 86400000);
+        if (_devFiltreActuel === 'tous')     return true;
+        if (_devFiltreActuel === 'suspendu') return abo.suspendu === true;
+        if (_devFiltreActuel === 'expire')   return jr <= 0 && !abo.suspendu;
+        if (_devFiltreActuel === 'actif')    return jr > 0  && !abo.suspendu;
+        if (_devFiltreActuel === 'essai')    return abo.plan === 'essai';
+        return true;
+    });
+
+    if (!filtered.length) {
+        liste.innerHTML = '<p class="text-slate-500 text-xs text-center py-6">Aucun établissement trouvé</p>';
+        return;
+    }
+
+    liste.innerHTML = filtered.map(e => {
+        const abo     = e.abonnement;
+        const exp     = abo?.expiry?.toDate ? abo.expiry.toDate() : new Date(abo?.expiry || 0);
+        const jr      = abo ? Math.ceil((exp - now) / 86400000) : null;
+        const suspendu = abo?.suspendu === true;
+        const expire  = jr !== null && jr <= 0;
+        const urgence = jr !== null && jr > 0 && jr <= 7;
+
+        let statut, statutClass;
+        if (!abo)       { statut = '❓ Sans abonnement'; statutClass = 'text-slate-400'; }
+        else if (suspendu) { statut = '⏸ Suspendu';       statutClass = 'text-yellow-400'; }
+        else if (expire)   { statut = '🚫 Expiré';         statutClass = 'text-red-400'; }
+        else if (urgence)  { statut = `⚠️ ${jr}j restants`; statutClass = 'text-orange-400'; }
+        else               { statut = `✅ ${jr}j restants`; statutClass = 'text-green-400'; }
+
+        const tel = (e.telephone || '').replace(/\D/g, '');
+        const borderClass = (urgence || expire) ? 'border-orange-800' : 'border-slate-800';
+
+        return `
+        <div class="bg-slate-900 p-3 rounded-xl border ${borderClass}">
+            <div class="flex justify-between items-start mb-2">
+                <div class="flex-1 min-w-0">
+                    <p class="text-white font-black text-sm truncate">${e.nom || e.id}</p>
+                    <p class="text-slate-400 text-[10px]">${e.activite || '—'} · ${e.telephone || '—'}</p>
+                    <p class="text-slate-600 text-[9px] font-mono">${e.id}</p>
+                </div>
+                <div class="text-right ml-2 shrink-0">
+                    <p class="${statutClass} font-bold text-xs">${statut}</p>
+                    ${abo ? `<p class="text-slate-500 text-[9px] capitalize">${abo.plan || '—'}</p>` : ''}
+                    ${abo && jr > 0 ? `<p class="text-slate-500 text-[9px]">exp. ${exp.toLocaleDateString('fr-FR')}</p>` : ''}
+                </div>
+            </div>
+            <div class="flex gap-1.5 flex-wrap mt-1">
+                <button onclick="ouvrirModalActivation('${e.id}', '${(e.nom||e.id).replace(/'/g,'\\\'')}')"
+                        class="bg-green-800 hover:bg-green-700 text-white text-[9px] px-2.5 py-1 rounded-full font-bold transition-colors">
+                    🔄 Activer
+                </button>
+                ${suspendu
+                    ? `<button onclick="devToggleSuspension('${e.id}', false)"
+                              class="bg-blue-800 hover:bg-blue-700 text-white text-[9px] px-2.5 py-1 rounded-full font-bold transition-colors">
+                          ▶ Réactiver
+                       </button>`
+                    : `<button onclick="devToggleSuspension('${e.id}', true)"
+                              class="bg-yellow-800 hover:bg-yellow-700 text-white text-[9px] px-2.5 py-1 rounded-full font-bold transition-colors">
+                          ⏸ Suspendre
+                       </button>`
+                }
+                <button onclick="devDesactiver('${e.id}')"
+                        class="bg-red-900 hover:bg-red-800 text-white text-[9px] px-2.5 py-1 rounded-full font-bold transition-colors">
+                    🚫 Désactiver
+                </button>
+                ${tel
+                    ? `<button onclick="devEnvoyerRappel('${tel}', '${(e.nom||e.id).replace(/'/g,'\\\'').replace(/"/g,'&quot;')}', ${jr})"
+                              class="bg-[#25D366] hover:bg-[#128C7E] text-white text-[9px] px-2.5 py-1 rounded-full font-bold transition-colors">
+                          📱 WhatsApp
+                       </button>`
+                    : ''
+                }
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function ouvrirModalActivation(etabId, nom) {
+    _devEtabSelectionne = etabId;
+    document.getElementById('devModalAboNom').textContent = nom;
+    document.getElementById('devModalAbo').classList.remove('hidden');
+}
+
+async function confirmerActivation() {
+    const plan = document.querySelector('input[name="devPlan"]:checked')?.value;
+    if (!plan || !_devEtabSelectionne) return;
+
+    const durees = { essai: 7, mensuel: 30, trimestriel: 90, annuel: 365 };
+    const jours  = durees[plan] || 30;
+    const expiry = new Date(Date.now() + jours * 24 * 60 * 60 * 1000);
+
+    try {
+        await db.collection('abonnements').doc(_devEtabSelectionne).set({
+            plan,
+            statut   : 'actif',
+            suspendu : false,
+            expiry   : firebase.firestore.Timestamp.fromDate(expiry),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        document.getElementById('devModalAbo').classList.add('hidden');
+        await chargerTousEtablissements();
+        alert(`✅ Abonnement "${plan}" activé\nExpiration : ${expiry.toLocaleDateString('fr-FR')}`);
+    } catch (err) {
+        console.error('confirmerActivation:', err);
+        alert('Erreur lors de l\'activation. Réessayez.');
+    }
+}
+
+async function devToggleSuspension(etabId, suspendre) {
+    const msg = suspendre ? 'Suspendre cet établissement ?' : 'Réactiver cet établissement ?';
+    if (!confirm(msg)) return;
+    try {
+        await db.collection('abonnements').doc(etabId).update({
+            suspendu : suspendre,
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        await chargerTousEtablissements();
+    } catch (err) {
+        console.error('devToggleSuspension:', err);
+        alert('Erreur. Réessayez.');
+    }
+}
+
+async function devDesactiver(etabId) {
+    if (!confirm('⚠️ Désactiver définitivement cet abonnement ?\nL\'établissement perdra l\'accès immédiatement.')) return;
+    try {
+        await db.collection('abonnements').doc(etabId).update({
+            statut   : 'inactif',
+            suspendu : false,
+            expiry   : firebase.firestore.Timestamp.fromDate(new Date()),
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        await chargerTousEtablissements();
+    } catch (err) {
+        console.error('devDesactiver:', err);
+        alert('Erreur. Réessayez.');
+    }
+}
+
+function devEnvoyerRappel(tel, nom, joursRestants) {
+    // Normaliser le numéro burkinabè (+226)
+    let numero = tel.replace(/\D/g, '');
+    if (!numero.startsWith('226')) numero = '226' + numero;
+
+    let msg;
+    if (joursRestants !== null && joursRestants <= 0) {
+        msg =
+`Bonjour ${nom} 👋
+
+Votre abonnement *DigitalFacture Pro* a expiré.
+
+Renouvelez maintenant pour retrouver l'accès à votre caisse :
+• Mensuel : *5 000 F* (30 jours)
+• Trimestriel : *13 500 F* (90 jours) ⭐
+• Annuel : *48 000 F* (365 jours)
+
+Répondez *OUI* pour recevoir les instructions de paiement. 🙏`;
+    } else {
+        msg =
+`Bonjour ${nom} 👋
+
+Votre abonnement *DigitalFacture Pro* expire dans *${joursRestants} jour(s)*.
+
+Renouvelez avant expiration pour ne pas interrompre votre activité :
+• Mensuel : *5 000 F*
+• Trimestriel : *13 500 F* ⭐ Populaire
+• Annuel : *48 000 F*
+
+Répondez *OUI* pour payer maintenant. 🙏`;
+    }
+    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`, '_blank');
+}
+
+// ════════════════════════════════════════════════════════
+//  RENOUVELLEMENT
+// ════════════════════════════════════════════════════════
+function ouvrirModalRenouvellement() {
+    const ref = `${ETABLISSEMENT_ID.toUpperCase().slice(0,6)}-${Date.now().toString().slice(-6)}`;
+    document.getElementById('refPaiement').textContent = ref;
+    document.getElementById('modalRenouvellement').classList.remove('hidden');
+}
+
+async function soumettreRenouvellement() {
+    const plan = document.querySelector('input[name="planRenouvellement"]:checked')?.value;
+    if (!plan) { alert('Choisissez un plan'); return; }
+    try {
+        await db.collection('demandes_renouvellement').add({
+            etablissement_id : ETABLISSEMENT_ID,
+            plan,
+            ref              : document.getElementById('refPaiement').textContent,
+            statut           : 'en_attente',
+            createdAt        : firebase.firestore.FieldValue.serverTimestamp()
+        });
+        document.getElementById('modalRenouvellement').classList.add('hidden');
+        alert('✅ Demande envoyée ! Validation sous 24h après réception du paiement.');
+    } catch (err) {
+        console.error('soumettreRenouvellement:', err);
+        alert('Erreur lors de l\'envoi. Réessayez.');
+    }
+}
+
+// ════════════════════════════════════════════════════════
+//  BLOCAGE ACCÈS
+// ════════════════════════════════════════════════════════
+function bloquerAcces(code, titre, message) {
+    masquerLoading();
+    document.getElementById('licenceBlockIcon').textContent  = code === 'expired' ? '⏰' : code === 'suspended' ? '⏸' : '🚫';
+    document.getElementById('licenceBlockTitre').textContent = titre;
+    document.getElementById('licenceBlockMessage').textContent = message;
+    document.getElementById('licenceBlockModal').classList.remove('hidden');
+}
+
+function masquerLoading() {
+    const ls = document.getElementById('loadingScreen');
+    if (ls) ls.classList.add('hidden');
+}
+
+function setLoadingMessage(msg) {
+    document.getElementById('loadingMessage').textContent = msg;
+}
+
+// ════════════════════════════════════════════════════════
+//  UTILITAIRES — NOMBRE EN LETTRES (simplifié)
+// ════════════════════════════════════════════════════════
+function nombreEnLettres(n) {
+    n = Math.round(n);
+    if (n === 0) return 'zéro';
+    const u = ['', 'un', 'deux', 'trois', 'quatre', 'cinq', 'six', 'sept', 'huit', 'neuf',
+               'dix', 'onze', 'douze', 'treize', 'quatorze', 'quinze', 'seize', 'dix-sept', 'dix-huit', 'dix-neuf'];
+    const d = ['', '', 'vingt', 'trente', 'quarante', 'cinquante', 'soixante', 'soixante', 'quatre-vingt', 'quatre-vingt'];
+    function conv(nb) {
+        if (nb < 20)  return u[nb];
+        if (nb < 100) {
+            const diz = Math.floor(nb / 10), uni = nb % 10;
+            if (diz === 7 || diz === 9) return d[diz] + (uni === 1 && diz === 7 ? '-et-' : '-') + u[10 + uni];
+            return d[diz] + (uni === 1 && diz < 8 ? '-et-' : uni ? '-' : '') + (uni ? u[uni] : '');
+        }
+        const c = Math.floor(nb / 100);
+        return (c > 1 ? u[c] + '-cent' : 'cent') + (nb % 100 ? '-' + conv(nb % 100) : 's');
+    }
+    let res = '';
+    if (n >= 1000000) { res += conv(Math.floor(n / 1000000)) + '-million' + (Math.floor(n / 1000000) > 1 ? 's' : '') + (n % 1000000 ? '-' : ''); n %= 1000000; }
+    if (n >= 1000)    { res += (Math.floor(n / 1000) > 1 ? conv(Math.floor(n / 1000)) + '-' : '') + 'mille' + (n % 1000 ? '-' : ''); n %= 1000; }
+    if (n > 0) res += conv(n);
+    return res;
+}
+</script>
+
+<!-- Service Worker PWA (optionnel — sw.js requis sur le serveur) -->
+<script>
+if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+            .then(r => console.log('✅ SW actif:', r.scope))
+            .catch(() => {}); // sw.js absent en dev — silencieux
+    });
+}
+</script>
+</body>
+</html>
